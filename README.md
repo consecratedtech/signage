@@ -1,82 +1,39 @@
 # signage *(placeholder name)*
 
-*Copyright (C) 2026 Consecrated Tech — created and maintained by Casey. Licensed under GPL-3.0-or-later.*
+Offline digital signage for small organizations — churches, nonprofits, schools,
+and clinics. Flash a Raspberry Pi (or repurpose an old 64-bit PC) and it boots
+straight into a screen you manage from your phone. No cloud account, no
+subscription — and built so a power cut or a bad update can't wedge it.
 
-An **offline, appliance-style digital signage** system for small organizations —
-churches, nonprofits, schools, clinics. Flash a Raspberry Pi (or repurpose an
-old PC), and it boots straight into a screen you manage from your phone. No cloud
-account, no subscription, and built so it **can't get wedged** by a power cut or
-a bad update.
+One device runs the controls and pushes content — a web page, images, Google
+Slides, or a PowerPoint turned into slides — to the others over your local
+network. Every device runs the same software, and any one of them can be the
+controller.
 
-Every device runs the same software. One device wears the "controller" hat and
-pushes content — a web page, images, Google Slides, or a PowerPoint converted to
-slides — to the others over your local network. The role can move to any device
-at any time.
+## What you need
 
-> Read [`LAWS.md`](./LAWS.md) for the non-negotiable principles that guide every
-> decision here. The short version: **fully works or we don't ship it**, and
-> **it cannot break**.
+- A **Raspberry Pi 4 or 5** running **Raspberry Pi OS Lite (64-bit)**, or
+- A **64-bit PC** running **Debian 13** (no desktop needed).
 
----
+## Get started
 
-## Try it locally (1 command)
+On the device:
 
-No device needed — see the setup screen on your own computer:
+    git clone https://github.com/consecratedtech/signage.git
+    cd signage
+    sudo ./install.sh
 
-```bash
-./run.sh
-```
+The installer checks the system, asks whether this device shows content (a
+display) or runs the controls, installs what it needs, and sets it to start on
+boot. Re-check anything later with `sudo ./install.sh --check`.
 
-Then open **http://localhost:8080**. (Or just double-click `app/pages/setup.html`
-to preview the first-run screen with no install at all.)
+Then open the controller from your phone or computer at `http://<device-ip>:8080`.
 
-## Install on a device
+## Goals
 
-**What it runs on (all Debian 13 "Trixie"):**
-
-| Hardware | OS to flash |
-|---|---|
-| Raspberry Pi 4 / 5 | Raspberry Pi OS **Lite (64-bit)** — via Raspberry Pi Imager |
-| Old PC / ZimaBoard (64-bit) | **Debian 13** minimal (no desktop) |
-
-Then, on the device:
-
-```bash
-git clone https://github.com/<you>/<repo>.git
-cd <repo>
-sudo ./install.sh
-```
-
-The installer checks the OS and hardware, asks whether this device is a
-**display** or the **controller**, installs only what that role needs, and sets
-it up to boot straight into signage. Re-run diagnostics anytime with
-`sudo ./install.sh --check`.
-
----
-
-## Status
-
-Early build. Working so far: the installer, first-boot identity + role,
-the encrypted secret store, command signing, hostname sync, and the setup UI.
-
-Roadmap: pairing handshake → LAN discovery → content pipeline → the full
-control-panel UI → staged-swap-with-rollback updates, growing toward an
-immutable A/B image.
+Built to one standard: it should fully work, and be nearly impossible to break.
+See [LAWS.md](./LAWS.md).
 
 ## License
 
-**GPL-3.0-or-later.** This keeps the project open: anyone can use and modify it,
-but distributed modifications must stay open-source too — so no one can absorb
-it into a closed product and strand the community.
-
-Before publishing, drop in the full official license text (GitHub then detects it):
-
-```bash
-curl -fsSL https://www.gnu.org/licenses/gpl-3.0.txt -o LICENSE
-```
-
-Set the copyright holder in `LICENSE` — held by **Consecrated Tech** (author: Casey).
-
-**Contributors:** if you want to keep the option to sell a commercial/closed
-license later, require a **CLA** (Contributor License Agreement) before merging
-outside code — otherwise contributors retain rights that block relicensing.
+GPL-3.0-or-later. Copyright (C) 2026 Consecrated Tech.
