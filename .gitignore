@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Runtime data — NEVER commit (secrets live here)
+data/
+*.enc
+*.key
+device_id
+config.json
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
