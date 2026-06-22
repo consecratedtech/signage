@@ -27,7 +27,7 @@ from fastapi.responses import (
     RedirectResponse,
 )
 
-from . import config, discovery, hostname, identity, library, pairing
+from . import auth, commands, config, discovery, hostname, identity, library, pairing, sync
 
 _SETUP_HTML = (Path(__file__).parent / "pages" / "setup.html").read_text(encoding="utf-8")
 _SCREEN_HTML = (Path(__file__).parent / "pages" / "screen.html").read_text(encoding="utf-8")
@@ -95,11 +95,22 @@ def create_app() -> FastAPI:
 
     @app.get("/api/screen-data")
     def screen_data():
-        out = []
-        for item in library.list_items():
-            src = item["ref"] if item["type"] == "url" else f"/asset/{item['ref']}"
-            out.append({"type": item["type"], "src": src, "seconds": item["seconds"]})
-        return {"items": out, "pairing_code": pairing.current_code()}
+        pushed = sync.screen_items()  # None until a controller pushes content
+        if pushed is not None:
+            items = pushed
+        else:
+            items = []
+            for item in library.list_items():
+                src = item["ref"] if item["type"] == "url" else f"/asset/{item['ref']}"
+                items.append({"type": item["type"], "src": src, "seconds": item["seconds"]})
+        return {"items": items, "pairing_code": pairing.current_code()}
+
+    @app.get("/recv-asset/{name}")
+    def recv_asset(name: str):
+        path = sync.recv_asset_path(name)
+        if "/" in name or "\\" in name or not path.is_file():
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return FileResponse(path)
 
     @app.get("/asset/{ref}")
     def asset(ref: str):
@@ -159,6 +170,17 @@ def create_app() -> FastAPI:
         result["name"] = current()["name"]
         return result
 
+    @app.post("/api/playlist")
+    async def receive_playlist(request: Request):
+        controller = pairing.get_controller()
+        if not controller:
+            return JSONResponse({"error": "not paired"}, status_code=403)
+        body = await request.json()
+        ok = sync.receive(body.get("manifest"), body.get("signature"), controller["site_key"])
+        if not ok:
+            return JSONResponse({"error": "rejected"}, status_code=403)
+        return {"ok": True}
+
     # --- pairing: controller side -------------------------------------------
 
     @app.get("/api/discover")
@@ -195,6 +217,16 @@ def create_app() -> FastAPI:
     def displays_remove(device: str = Form(..., alias="device_id")):
         pairing.remove_display(device)
         return RedirectResponse("/", status_code=303)
+
+    @app.post("/api/push")
+    def push():
+        displays = pairing.list_displays()
+        if not displays:
+            return {"results": [], "message": "No displays paired yet."}
+        base_url = f"http://{discovery.primary_ip()}:{config.PORT}"
+        manifest = sync.build_manifest(library.list_items(), current()["name"], base_url)
+        results = sync.push_all(displays, manifest, auth.get_or_create_site_key())
+        return {"results": results}
 
     return app
 
@@ -369,4 +401,25 @@ def _control_home(cfg: dict) -> HTMLResponse:
       }
       </script>"""
 
-    return _page("Controller", screens + find + _content_body(cfg, "Controller"))
+    push = """
+      <div class="card"><b>Send content to your displays</b>
+        <p class="muted">Pushes this controller's playlist to every paired display.</p>
+        <button onclick="pushAll()">Push to all displays</button>
+        <div id="pushResult" class="muted" style="margin-top:10px"></div>
+      </div>
+      <script>
+      async function pushAll(){
+        const box=document.getElementById('pushResult');
+        box.textContent='Sending…';
+        try{
+          const r=await fetch('/api/push',{method:'POST'});
+          const d=await r.json();
+          if(d.message){box.textContent=d.message;return;}
+          const ok=d.results.filter(x=>x.ok).length;
+          const fail=d.results.filter(x=>!x.ok);
+          box.textContent=`Sent to ${ok} display(s).`+(fail.length?` Failed: ${fail.map(f=>f.name).join(', ')}.`:'');
+        }catch(e){box.textContent='Push failed.';}
+      }
+      </script>"""
+
+    return _page("Controller", screens + find + push + _content_body(cfg, "Controller"))

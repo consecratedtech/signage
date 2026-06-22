@@ -47,3 +47,18 @@ pairing, content, updates, and recovery should all be doable from a simple scree
 ### 8. Always clear what's happening
 Plain-language activity anyone can read, full technical logs for those who want
 them, and one health screen that explains any problem in plain English.
+
+---
+
+## Planned features
+
+Things we intend to build, kept here so they're not forgotten:
+
+- **First-boot WiFi setup (no ethernet needed).** If a device has no wired
+  connection, it starts its own temporary WiFi network and shows a setup page
+  (a captive portal). The user connects from a phone, picks their WiFi, and
+  enters the password; the device then joins that network. To honor goal #2, a
+  device that ever loses its saved network falls back to this hotspot mode on its
+  own, so it can always be reconnected from a phone — never a dead end.
+- **Content groups and per-display targeting** (send to all, a group, or one).
+- **Video and YouTube** once playback is genuinely smooth on the hardware.
