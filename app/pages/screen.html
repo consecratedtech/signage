@@ -6,41 +6,57 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Screen</title>
 <style>
-  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:system-ui,sans-serif}
   #stage{position:fixed;inset:0;background:#000}
-  #stage img,#stage iframe{
-    position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:contain;background:#000;
-  }
-  #idle{
-    position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
-    color:#9aa;font:18px/1.5 system-ui,sans-serif;text-align:center;padding:24px;
-  }
+  #stage img,#stage iframe{position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:contain;background:#000}
+  #idle{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9aa;font-size:18px;text-align:center;padding:24px}
+  #pair{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
+        background:rgba(8,10,12,.92);color:#fff;text-align:center;padding:24px;z-index:10}
+  #pair .label{color:#9aa;font-size:20px;margin-bottom:18px}
+  #pair .code{font:700 clamp(48px,12vw,140px)/1 ui-monospace,monospace;letter-spacing:.12em;color:#F0A93B}
+  #pair .sub{color:#9aa;font-size:16px;margin-top:18px}
 </style>
 </head>
 <body>
   <div id="stage"></div>
   <div id="idle">Waiting for content…</div>
+  <div id="pair">
+    <div class="label">To connect this screen, enter this code on your controller</div>
+    <div class="code" id="pairCode"></div>
+    <div class="sub">This code disappears in a few minutes.</div>
+  </div>
 
   <script>
     const stage = document.getElementById('stage');
     const idle = document.getElementById('idle');
+    const pair = document.getElementById('pair');
+    const pairCode = document.getElementById('pairCode');
     let items = [];
     let pos = 0;
     let timer = null;
-    let signature = '';   // detects when the playlist changes, to reload it
+    let signature = '';
 
     async function loadData() {
       try {
         const r = await fetch('/api/screen-data', { cache: 'no-store' });
         const data = await r.json();
+
+        // pairing code overlay (shown over whatever is playing)
+        if (data.pairing_code) {
+          pairCode.textContent = data.pairing_code;
+          pair.style.display = 'flex';
+        } else {
+          pair.style.display = 'none';
+        }
+
         const sig = JSON.stringify(data.items || []);
-        if (sig !== signature) {     // playlist changed -> restart rotation
+        if (sig !== signature) {
           signature = sig;
           items = data.items || [];
           pos = 0;
           show();
         }
-      } catch (e) { /* keep showing what we have if the fetch fails */ }
+      } catch (e) { /* keep showing what we have if a fetch fails */ }
     }
 
     function show() {
@@ -48,22 +64,17 @@
       if (!items.length) { idle.style.display = 'flex'; stage.innerHTML = ''; return; }
       idle.style.display = 'none';
       const item = items[pos % items.length];
-
       const el = item.type === 'image'
         ? Object.assign(document.createElement('img'), { src: item.src })
-        : Object.assign(document.createElement('iframe'), {
-            src: item.src, allow: 'autoplay; fullscreen',
-          });
-
+        : Object.assign(document.createElement('iframe'), { src: item.src, allow: 'autoplay; fullscreen' });
       stage.innerHTML = '';
       stage.appendChild(el);
-
       const secs = Math.max(3, item.seconds || 10);
       timer = setTimeout(() => { pos = (pos + 1) % items.length; show(); }, secs * 1000);
     }
 
     loadData();
-    setInterval(loadData, 15000);   // pick up playlist changes within 15s
+    setInterval(loadData, 10000);
   </script>
 </body>
 </html>
