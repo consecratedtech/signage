@@ -18,3 +18,4 @@ config.json
 *.swp
 
 HANDOFF.md
+signage HANDOFF.md
