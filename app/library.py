@@ -8,8 +8,10 @@ image. A PowerPoint is converted to images on add, then stored as image items.
 """
 
 import json
+import re
 import secrets
 import shutil
+import urllib.request
 from pathlib import Path
 
 from . import config, convert
@@ -67,6 +69,44 @@ def _slides_autoplay(url: str) -> str:
     return url
 
 
+_SLIDES_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+
+def _slides_per_slide_ms(url: str) -> int:
+    """The per-slide auto-advance time baked into a published Slides URL."""
+    m = re.search(r"delayms=(\d+)", url)
+    return int(m.group(1)) if m else 0
+
+
+def _count_slides(url: str) -> int:
+    """Best-effort count of slides in a published Google Slides deck: fetch the
+    published page and count the slide entries in its embedded model. Returns 0
+    on any failure (offline, markup change) so callers fall back gracefully."""
+    try:
+        fetch = url.replace("/embed", "/pub", 1)
+        req = urllib.request.Request(fetch, headers={"User-Agent": _SLIDES_UA})
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            html = resp.read(8_000_000).decode("utf-8", "replace")
+        # Each slide is an array ["gID_0_N",<index>,"title",...] in the model.
+        n = len(re.findall(r'\["g[0-9a-z]+_\d+_\d+",\d+,"', html))
+        return n if 1 <= n <= 500 else 0
+    except Exception:
+        return 0
+
+
+def _slides_plan(url: str):
+    """(slide_count, per_slide_seconds) for an auto-advancing published deck, or
+    (0, 0) when it can't be determined (no delayms / fetch / parse failure)."""
+    ms = _slides_per_slide_ms(url)
+    if ms <= 0:
+        return 0, 0
+    n = _count_slides(url)
+    if n <= 0:
+        return 0, 0
+    return n, max(ms // 1000, 1)
+
+
 def add_url(url: str, seconds: int = DEFAULT_URL_SECONDS, name: str = "") -> dict:
     url = url.strip()
     if not url.startswith(("http://", "https://")):
@@ -77,6 +117,26 @@ def add_url(url: str, seconds: int = DEFAULT_URL_SECONDS, name: str = "") -> dic
         "id": secrets.token_hex(4), "type": "url", "ref": url,
         "seconds": int(seconds), "name": label,
     })
+
+
+def measure_slides(item_id: str) -> dict:
+    """Network step, run right after adding a URL: for a Google Slides item, size
+    its on-screen time to the whole deck — slide count x the per-slide delay from
+    the link — so the deck plays all the way through before the next item instead
+    of being cut off after one slide. No-op for non-Slides items or when the deck
+    can't be measured (offline, markup change). Kept out of add_url so the
+    library core stays pure and offline-testable."""
+    items = _load()
+    for it in items:
+        if it["id"] == item_id and it.get("type") == "url" and _is_google_slides(it.get("ref", "")):
+            n, per = _slides_plan(it["ref"])
+            if n and per:
+                it["slides"] = n
+                it["per_slide"] = per
+                it["seconds"] = n * per
+                _save(items)
+            return it
+    return {}
 
 
 def add_image(filename: str, data: bytes, seconds: int = DEFAULT_IMAGE_SECONDS) -> dict:

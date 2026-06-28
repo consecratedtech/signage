@@ -312,7 +312,8 @@ def create_app() -> FastAPI:
 
     @app.post("/api/content/url")
     def add_url(url: str = Form(...), seconds: int = Form(library.DEFAULT_URL_SECONDS)):
-        library.add_url(url, seconds)
+        item = library.add_url(url, seconds)
+        library.measure_slides(item["id"])  # size a Slides deck to play all the way through
         activity.log("Added a link to the playlist", url)
         return RedirectResponse("/", status_code=303)
 
@@ -584,7 +585,9 @@ _CSS = """
   /* lists (playlist items, displays, discovered devices) */
   .item{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
   .item:first-of-type{border-top:0}
-  .item .name{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .name{flex:1;min-width:0;font-weight:500;display:flex;flex-direction:column;justify-content:center}
+  .item .name .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .slidenote{font-family:"Space Mono",monospace;font-size:.7rem;color:var(--muted);margin-top:2px}
   .item .meta{font-family:"Space Mono",monospace;font-size:.78rem;color:var(--muted)}
   .item form{margin:0}
   .item .secs{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--muted)}
@@ -982,6 +985,11 @@ def _content_body(cfg: dict) -> str:
         for n, it in enumerate(items):
             up_dis = " disabled" if n == 0 else ""
             dn_dis = " disabled" if n == last else ""
+            slides = it.get("slides")
+            note = (f'<span class="slidenote">&#9654; plays all {slides} slides &middot; '
+                    f'{it.get("per_slide", "?")}s each (from the link)</span>' if slides else "")
+            secs_title = ("Total seconds for the whole deck (auto from the link)"
+                          if slides else "Seconds on screen")
             rows += f"""
               <div class="item">
                 <span class="ord">
@@ -996,11 +1004,11 @@ def _content_body(cfg: dict) -> str:
                     <button class="mv" title="Move down" aria-label="Move down"{dn_dis}>&#9660;</button>
                   </form>
                 </span>
-                <span class="name">{_esc(it['name'])}</span>
+                <span class="name"><span class="nm">{_esc(it['name'])}</span>{note}</span>
                 <form class="secs" method="post" action="/api/content/seconds">
                   <input type="hidden" name="item_id" value="{it['id']}">
                   <input name="seconds" type="number" min="{library.MIN_SECONDS}"
-                         value="{it['seconds']}" title="Seconds on screen" aria-label="Seconds on screen">
+                         value="{it['seconds']}" title="{secs_title}" aria-label="{secs_title}">
                   <button class="btn-ghost set" title="Save time">Set</button>
                 </form>
                 <form method="post" action="/api/content/remove">
@@ -1032,10 +1040,10 @@ def _content_body(cfg: dict) -> str:
           <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="15" title="seconds on screen">
           <button class="btn-primary" type="submit">Add</button>
         </form>
-        <p class="hint tail">A Google Slides deck advances by itself and restarts
-          from slide&nbsp;1 each time it comes up. Give it enough seconds to play
-          all the way through (about your per-slide time &times; the number of
-          slides) so the whole deck shows before the next item.</p>
+        <p class="hint tail">A Google Slides deck plays all the way through
+          automatically: it reads the slide count and the per-slide time from your
+          &ldquo;Publish to web&rdquo; link, then moves on to the next item. Turn on
+          auto-advance when you publish so the link carries the timing.</p>
       </div>
 
       <div class="card">

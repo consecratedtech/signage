@@ -40,6 +40,14 @@
   #pair .label{color:#9aa;font-size:20px;margin-bottom:18px}
   #pair .code{font:700 clamp(48px,12vw,140px)/1 ui-monospace,monospace;letter-spacing:.12em;color:#F0A93B}
   #pair .sub{color:#9aa;font-size:16px;margin-top:18px}
+
+  /* Boot splash: on startup, show the address (~1 min) so a freshly-rebooted
+     screen is easy to find on the network before content takes over. */
+  #boot{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+        background:#000;color:#9aa;text-align:center;padding:24px;z-index:8}
+  #boot .big{font-size:clamp(18px,2.6vw,26px);color:#cdd;margin-bottom:8px}
+  #boot .addr{font:700 clamp(22px,4vw,44px)/1.1 ui-monospace,monospace;color:#F0A93B;margin:6px 0}
+  #boot .hint{font-size:clamp(13px,1.6vw,18px);color:#9aa}
 </style>
 </head>
 <body>
@@ -58,6 +66,15 @@
     <img id="qrPair" class="qr" alt="QR code that opens this device">
     <div class="sub">This code disappears in a few minutes. &middot; This screen: <span class="url" id="pairUrl"></span></div>
   </div>
+  <div id="boot">
+    <div>
+      <div class="big">Starting up&hellip;</div>
+      <div class="addr" id="bootUrl"></div>
+      <div class="hint">Open this address on your phone or computer to set it up</div>
+      <img id="qrBoot" class="qr" alt="QR code that opens this device">
+      <div class="qrcap" id="qrBootCap" style="display:none">Scan to open</div>
+    </div>
+  </div>
 
   <script>
     const stage = document.getElementById('stage');
@@ -71,6 +88,7 @@
     let signature = '';
     let shuffle = false;
     let lastUrl = '';    // current connect URL (so the QR refreshes if the IP changes)
+    let bootDone = false; // true after the startup address splash has elapsed
     // Cache of mounted layers, one per item, keyed by "index|src". Built once and
     // reused so iframes are not needlessly reloaded; crossfading swaps which is
     // visible. A Google Slides layer is the exception — see activate().
@@ -86,16 +104,18 @@
         if (data.connect_url) {
           document.getElementById('connectUrl').textContent = data.connect_url;
           document.getElementById('pairUrl').textContent = data.connect_url;
+          document.getElementById('bootUrl').textContent = data.connect_url;
           if (data.connect_url !== lastUrl) {
             lastUrl = data.connect_url;
             // the query is only a cache-buster; the server always encodes its own address
             const qsrc = '/qr.png?u=' + encodeURIComponent(data.connect_url);
-            const qi = document.getElementById('qrIdle'), qp = document.getElementById('qrPair');
+            const qi = document.getElementById('qrIdle'), qp = document.getElementById('qrPair'), qb = document.getElementById('qrBoot');
             qi.onload = () => { qi.style.display = 'block'; document.getElementById('qrIdleCap').style.display = 'block'; };
             qp.onload = () => { qp.style.display = 'block'; };
+            qb.onload = () => { qb.style.display = 'block'; document.getElementById('qrBootCap').style.display = 'block'; };
             // if the QR can't be fetched, allow a retry on the next poll
-            qi.onerror = qp.onerror = () => { lastUrl = ''; };
-            qi.src = qsrc; qp.src = qsrc;
+            qi.onerror = qp.onerror = qb.onerror = () => { lastUrl = ''; };
+            qi.src = qsrc; qp.src = qsrc; qb.src = qsrc;
           }
         }
 
@@ -223,6 +243,7 @@
     }
 
     function show() {
+      if (!bootDone) return;          // the startup address splash owns the screen first
       if (timer) clearTimeout(timer);
       clearPendingSlide();            // no stale Slides reveal across a re-render
       if (!items.length) {            // nothing to play → show the idle/setup screen
@@ -241,6 +262,13 @@
         }
       });
     }
+
+    // Show the address for ~1 minute after boot, then hand the screen to content.
+    setTimeout(() => {
+      bootDone = true;
+      document.getElementById('boot').style.display = 'none';
+      show();
+    }, 60000);
 
     loadData();
     setInterval(loadData, 10000);

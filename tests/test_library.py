@@ -259,3 +259,25 @@ def test_set_seconds_unknown_id_is_noop():
     a = library.add_url("a.com", seconds=12)
     library.set_seconds("ffffffff", 99)
     assert library.list_items()[0]["seconds"] == 12
+
+
+# --- Google Slides per-slide timing (URL parse; no network) ------------------
+
+def test_slides_per_slide_ms_parses_delayms():
+    assert library._slides_per_slide_ms(
+        "https://docs.google.com/presentation/d/e/X/pub?start=true&loop=true&delayms=15000") == 15000
+
+
+def test_slides_per_slide_ms_absent_is_zero():
+    assert library._slides_per_slide_ms("https://docs.google.com/presentation/d/e/X/pub") == 0
+
+
+def test_add_url_is_pure_no_slides_metadata_until_measured():
+    # add_url must not reach the network; slide count/timing only appear after the
+    # separate measure_slides step runs.
+    item = library.add_url("https://docs.google.com/presentation/d/e/X/pub?delayms=15000")
+    assert "slides" not in item and "per_slide" not in item
+
+
+def test_measure_slides_unknown_id_is_noop():
+    assert library.measure_slides("ffffffff") == {}
