@@ -303,8 +303,11 @@ EOF
 ok "${APP}-kiosk.service installed (cage + ${CHROMIUM_PKG}, boots straight to fullscreen)"
 
 systemctl daemon-reload
-systemctl enable --now "${APP}.service"      >/dev/null 2>&1 || warn "could not start ${APP}.service yet (app code may be incomplete)"
-systemctl enable --now "${APP}-kiosk.service" >/dev/null 2>&1 || warn "could not start kiosk yet"
+systemctl enable "${APP}.service" "${APP}-kiosk.service" >/dev/null 2>&1 || true
+# Use restart (not just enable --now) so re-running the installer to UPDATE
+# actually loads the new code — enable --now is a no-op on an already-running unit.
+systemctl restart "${APP}.service"       >/dev/null 2>&1 || warn "could not start ${APP}.service yet (app code may be incomplete)"
+systemctl restart "${APP}-kiosk.service" >/dev/null 2>&1 || warn "could not start kiosk yet"
 
 # ---- done -------------------------------------------------------------------
 step "Done"
