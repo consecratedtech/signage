@@ -1,0 +1,198 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""Pure-logic tests for app/library.py.
+
+Covers add_url normalization (bare domain -> https, Slides /pub -> /embed +
+autoplay, custom names), reorder semantics, remove, and add_image with a tiny
+bytes blob. add_pptx is intentionally NOT tested (needs LibreOffice/poppler).
+
+These tests touch the filesystem, but only inside the temp data dir set up in
+conftest.py. The ``clean_data_dir`` fixture wipes that dir before each test so
+the persisted library.json never leaks state between tests.
+"""
+
+import pytest
+
+from app import library
+
+pytestmark = pytest.mark.usefixtures("clean_data_dir")
+
+
+# --- add_url: scheme normalization ------------------------------------------
+
+def test_add_url_bare_domain_gets_https():
+    item = library.add_url("example.com")
+    assert item["ref"] == "https://example.com"
+    assert item["type"] == "url"
+
+
+def test_add_url_http_left_alone():
+    item = library.add_url("http://example.com/page")
+    assert item["ref"] == "http://example.com/page"
+
+
+def test_add_url_https_left_alone():
+    item = library.add_url("https://secure.example.com")
+    assert item["ref"] == "https://secure.example.com"
+
+
+def test_add_url_strips_whitespace_then_adds_scheme():
+    item = library.add_url("  example.com/x  ")
+    assert item["ref"] == "https://example.com/x"
+
+
+def test_add_url_default_seconds_and_generated_id():
+    item = library.add_url("example.com")
+    assert item["seconds"] == library.DEFAULT_URL_SECONDS
+    assert isinstance(item["id"], str) and len(item["id"]) == 8  # token_hex(4)
+
+
+def test_add_url_seconds_coerced_to_int():
+    item = library.add_url("example.com", seconds="25")
+    assert item["seconds"] == 25
+    assert isinstance(item["seconds"], int)
+
+
+# --- add_url: name handling -------------------------------------------------
+
+def test_add_url_default_name_is_the_url():
+    item = library.add_url("https://example.com/foo")
+    assert item["name"] == "https://example.com/foo"
+
+
+def test_add_url_custom_name_honored():
+    item = library.add_url("example.com", name="  Lobby Page  ")
+    assert item["name"] == "Lobby Page"
+
+
+# --- add_url: Google Slides normalization -----------------------------------
+
+SLIDES_PUB = "https://docs.google.com/presentation/d/e/ABC123/pub"
+
+
+def test_add_url_slides_pub_to_embed_with_autoplay():
+    item = library.add_url(SLIDES_PUB)
+    assert "/embed" in item["ref"]
+    assert "/pub" not in item["ref"]
+    assert "start=true" in item["ref"]
+    assert "loop=true" in item["ref"]
+    assert "delayms=10000" in item["ref"]
+
+
+def test_add_url_slides_default_name_is_google_slides():
+    item = library.add_url(SLIDES_PUB)
+    assert item["name"] == "Google Slides"
+
+
+def test_add_url_slides_custom_name_honored():
+    item = library.add_url(SLIDES_PUB, name="Weekly Deck")
+    assert item["name"] == "Weekly Deck"
+
+
+def test_add_url_slides_uses_amp_when_query_present():
+    item = library.add_url(SLIDES_PUB + "?foo=bar")
+    # existing query -> autoplay params appended with '&'
+    assert "?foo=bar&start=true" in item["ref"]
+
+
+def test_add_url_slides_only_replaces_first_pub():
+    # .replace(..., 1) -> only the first /pub becomes /embed
+    url = "https://docs.google.com/presentation/d/e/X/pub/pub"
+    item = library.add_url(url)
+    assert item["ref"].count("/embed") == 1
+    assert item["ref"].startswith(
+        "https://docs.google.com/presentation/d/e/X/embed/pub"
+    )
+
+
+def test_add_url_slides_does_not_duplicate_start_param():
+    url = SLIDES_PUB + "?start=false"
+    item = library.add_url(url)
+    # 'start=' already present -> autoplay params NOT re-added
+    assert item["ref"].count("start=") == 1
+
+
+def test_non_slides_url_unchanged_by_autoplay():
+    item = library.add_url("https://example.com/pub")
+    # /pub here is not a Slides link, so it must be left exactly alone
+    assert item["ref"] == "https://example.com/pub"
+
+
+# --- add_image --------------------------------------------------------------
+
+def test_add_image_persists_blob_and_metadata():
+    data = b"\x89PNG\r\n\x1a\nfake-bytes"
+    item = library.add_image("poster.PNG", data)
+    assert item["type"] == "image"
+    assert item["name"] == "poster.PNG"
+    assert item["seconds"] == library.DEFAULT_IMAGE_SECONDS
+    # ref preserves the (lowercased) suffix and the file exists with our bytes.
+    assert item["ref"].endswith(".png")
+    assert library.asset_path(item["ref"]).read_bytes() == data
+
+
+def test_add_image_no_suffix_gets_img_extension():
+    item = library.add_image("noext", b"data")
+    assert item["ref"].endswith(".img")
+
+
+# --- list / append ----------------------------------------------------------
+
+def test_list_items_empty_initially():
+    assert library.list_items() == []
+
+
+def test_added_items_are_listed_in_order():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    ids = [i["id"] for i in library.list_items()]
+    assert ids == [a["id"], b["id"]]
+
+
+# --- remove -----------------------------------------------------------------
+
+def test_remove_drops_the_right_item():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    c = library.add_url("c.com")
+    library.remove(b["id"])
+    remaining = [i["id"] for i in library.list_items()]
+    assert remaining == [a["id"], c["id"]]
+
+
+def test_remove_unknown_id_is_noop():
+    a = library.add_url("a.com")
+    library.remove("ffffffff")
+    assert [i["id"] for i in library.list_items()] == [a["id"]]
+
+
+# --- reorder ----------------------------------------------------------------
+
+def test_reorder_full_order():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    c = library.add_url("c.com")
+    library.reorder([c["id"], a["id"], b["id"]])
+    assert [i["id"] for i in library.list_items()] == [c["id"], a["id"], b["id"]]
+
+
+def test_reorder_partial_order_unlisted_go_to_end():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    c = library.add_url("c.com")
+    # Only b listed -> b first, then a and c keep their original relative order.
+    library.reorder([b["id"]])
+    assert [i["id"] for i in library.list_items()] == [b["id"], a["id"], c["id"]]
+
+
+def test_reorder_ignores_unknown_ids():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    library.reorder(["does-not-exist", b["id"], "nope", a["id"]])
+    assert [i["id"] for i in library.list_items()] == [b["id"], a["id"]]
+
+
+def test_reorder_empty_order_keeps_all_at_end():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    library.reorder([])
+    assert [i["id"] for i in library.list_items()] == [a["id"], b["id"]]
