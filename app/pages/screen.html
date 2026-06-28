@@ -15,6 +15,9 @@
      of the (overflow:hidden) stage and is clipped away. */
   #stage iframe.slides{height:calc(100% + 60px)}
   #idle{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9aa;font-size:18px;text-align:center;padding:24px}
+  #idle .big{font-size:clamp(20px,3.2vw,32px);color:#cdd;margin-bottom:16px}
+  #idle .hint{font-size:clamp(14px,1.7vw,19px);color:#9aa;line-height:1.5}
+  #idle b,#pair .url{color:#F0A93B;font-weight:700}
   #pair{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
         background:rgba(8,10,12,.92);color:#fff;text-align:center;padding:24px;z-index:10}
   #pair .label{color:#9aa;font-size:20px;margin-bottom:18px}
@@ -29,11 +32,16 @@
 </head>
 <body>
   <div id="stage"></div>
-  <div id="idle">Waiting for content…</div>
+  <div id="idle">
+    <div>
+      <div class="big">Waiting for content…</div>
+      <div class="hint">Open <b id="connectUrl">this device's address</b><br>on your phone or computer to set it up</div>
+    </div>
+  </div>
   <div id="pair">
     <div class="label">To connect this screen, enter this code on your controller</div>
     <div class="code" id="pairCode"></div>
-    <div class="sub">This code disappears in a few minutes.</div>
+    <div class="sub">This code disappears in a few minutes. · This screen: <span class="url" id="pairUrl"></span></div>
   </div>
   <div id="shield"></div>
 
@@ -51,6 +59,12 @@
       try {
         const r = await fetch('/api/screen-data', { cache: 'no-store' });
         const data = await r.json();
+
+        // show where to reach this device (idle screen + pairing overlay)
+        if (data.connect_url) {
+          document.getElementById('connectUrl').textContent = data.connect_url;
+          document.getElementById('pairUrl').textContent = data.connect_url;
+        }
 
         // pairing code overlay (shown over whatever is playing)
         if (data.pairing_code) {

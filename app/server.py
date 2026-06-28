@@ -103,7 +103,12 @@ def create_app() -> FastAPI:
             for item in library.list_items():
                 src = item["ref"] if item["type"] == "url" else f"/asset/{item['ref']}"
                 items.append({"type": item["type"], "src": src, "seconds": item["seconds"]})
-        return {"items": items, "pairing_code": pairing.current_code()}
+        return {
+            "items": items,
+            "pairing_code": pairing.current_code(),
+            # so a display with nothing on it can show where to connect
+            "connect_url": f"http://{discovery.primary_ip()}:{config.PORT}",
+        }
 
     @app.get("/recv-asset/{name}")
     def recv_asset(name: str):
