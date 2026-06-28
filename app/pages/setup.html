@@ -5,11 +5,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Set up this device</title>
-<!-- Dev/preview loads fonts from a CDN. The offline device build will vendor
-     these font files locally so it never depends on the internet. -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=Hanken+Grotesk:wght@400;500;600&family=Space+Mono&display=swap" rel="stylesheet">
+<!-- Fonts are vendored locally (app/static/fonts) so the device never depends
+     on the internet. Licensing: app/static/fonts/OFL.txt. -->
+<link rel="stylesheet" href="/static/fonts/fonts.css">
 <style>
   :root{
     --paper:#F4F6F3;

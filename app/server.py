@@ -29,6 +29,7 @@ from fastapi.responses import (
     RedirectResponse,
     Response,
 )
+from fastapi.staticfiles import StaticFiles
 
 from . import (
     activity,
@@ -45,6 +46,7 @@ from . import (
 
 _SETUP_HTML = (Path(__file__).parent / "pages" / "setup.html").read_text(encoding="utf-8")
 _SCREEN_HTML = (Path(__file__).parent / "pages" / "screen.html").read_text(encoding="utf-8")
+_STATIC_DIR = Path(__file__).parent / "static"  # locally-vendored fonts, etc.
 
 
 def create_app() -> FastAPI:
@@ -83,6 +85,11 @@ def create_app() -> FastAPI:
                     pass
 
     app = FastAPI(title="signage", lifespan=lifespan)
+
+    # Serve locally-vendored assets (fonts) so the offline device never reaches
+    # out to a CDN. Created defensively in case the folder is somehow absent.
+    _STATIC_DIR.mkdir(parents=True, exist_ok=True)
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
     def _readvertise() -> None:
         # Role or name changed — re-publish so discovery reflects the current
@@ -332,15 +339,9 @@ def _esc(text) -> str:
     return _htmllib.escape(str(text))
 
 
-# Google Fonts used across the control panel (mirrors pages/setup.html).
-_FONTS_HEAD = (
-    '<link rel="preconnect" href="https://fonts.googleapis.com">'
-    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-    '<link href="https://fonts.googleapis.com/css2?'
-    'family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700'
-    '&family=Hanken+Grotesk:wght@400;500;600&family=Space+Mono'
-    '&display=swap" rel="stylesheet">'
-)
+# Fonts are vendored locally (app/static/fonts) so the offline device never
+# depends on the Google Fonts CDN. Licensing: app/static/fonts/OFL.txt.
+_FONTS_HEAD = '<link rel="stylesheet" href="/static/fonts/fonts.css">'
 
 # Big stylesheet kept as a plain (non-f) string so CSS braces need no escaping.
 _CSS = """
