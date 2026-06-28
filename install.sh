@@ -19,7 +19,8 @@ set -euo pipefail
 # ---- settings ---------------------------------------------------------------
 APP="signage"                       # placeholder name — rename to your project
 APP_USER="signage"
-APP_HOME="/opt/${APP}"
+APP_HOME="/opt/${APP}"              # a SYMLINK to the active release (A/B updates)
+RELEASES="/opt/${APP}-releases"     # versioned release dirs; APP_HOME points at one
 DATA_DIR="/var/lib/${APP}"          # disk-backed; holds secrets + cached content
 WORK_DIR="${DATA_DIR}/work"         # conversion scratch (NOT /tmp — tmpfs on trixie)
 WEB_PORT="8080"
@@ -152,7 +153,7 @@ usermod -aG video,render,input "$APP_USER" 2>/dev/null || true
 # XDG_RUNTIME_DIR even though the kiosk runs from systemd, not an interactive login.
 loginctl enable-linger "$APP_USER" 2>/dev/null || true
 
-install -d -m 0755 "$APP_HOME"
+install -d -m 0755 "$RELEASES"      # APP_HOME itself becomes a symlink (created below)
 install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR"
 install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$WORK_DIR"
 ok "data dir ${DATA_DIR} (0700 — secrets stay here, never world-readable)"
@@ -185,8 +186,12 @@ install -d -m 0755 /usr/share/icons/default
 ln -sfn /usr/share/icons/blank/cursors /usr/share/icons/default/cursors
 ok "blank cursor theme installed and set as the system default"
 
-# ---- app code ---------------------------------------------------------------
-step "Placing app code"
+# ---- app code (A/B release) -------------------------------------------------
+# Each version installs into its own release dir under ${RELEASES}; ${APP_HOME} is
+# a symlink to the active one. Activating is a single atomic symlink swap, so a
+# power cut mid-update can never leave a half-written app — worst case is "still on
+# the previous release." The updater (installed below) reuses this same layout.
+step "Placing app code (A/B release)"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -f "${SRC_DIR}/requirements.txt" ]; then
   ok "running from a checked-out repo"
@@ -198,24 +203,37 @@ elif [ -n "$REPO_URL" ]; then
 else
   die "no app source found. Run from the cloned repo, or set REPO_URL when piping."
 fi
-cp -a "${SRC_DIR}/." "${APP_HOME}/"
+REL="${RELEASES}/rel-$(date +%s)"
+rm -rf "$REL"; mkdir -p "$REL"
+cp -a "${SRC_DIR}/." "$REL/"
 # Never ship a copied-in dev virtualenv or repo metadata: a stale .venv carries
 # absolute-path shebangs from the source checkout (breaks pip), and .git is dead
 # weight on the appliance. The venv below is always built fresh.
-rm -rf "${APP_HOME}/.venv" "${APP_HOME}/.git"
-chown -R "$APP_USER":"$APP_USER" "$APP_HOME"
-ok "code copied to ${APP_HOME}"
+rm -rf "$REL/.venv" "$REL/.git"
+chown -R "$APP_USER":"$APP_USER" "$REL"
+ok "release staged at ${REL}"
 
-# ---- python venv ------------------------------------------------------------
 step "Setting up Python environment (venv — required on trixie/PEP 668)"
-sudo -u "$APP_USER" python3 -m venv --clear "${APP_HOME}/.venv"
-sudo -u "$APP_USER" "${APP_HOME}/.venv/bin/pip" install --quiet --upgrade pip
-if [ -f "${APP_HOME}/requirements.txt" ]; then
-  sudo -u "$APP_USER" "${APP_HOME}/.venv/bin/pip" install --quiet -r "${APP_HOME}/requirements.txt"
+sudo -u "$APP_USER" python3 -m venv --clear "$REL/.venv"
+sudo -u "$APP_USER" "$REL/.venv/bin/pip" install --quiet --upgrade pip
+if [ -f "$REL/requirements.txt" ]; then
+  sudo -u "$APP_USER" "$REL/.venv/bin/pip" install --quiet -r "$REL/requirements.txt"
   ok "python dependencies installed in venv"
 else
   warn "no requirements.txt — skipping pip install"
 fi
+
+# Activate this release. An older FLAT install (a real dir, not a symlink) is
+# retired into ${RELEASES} first so it remains as a rollback target.
+if [ -e "$APP_HOME" ] && [ ! -L "$APP_HOME" ]; then
+  rm -rf "${RELEASES}/rel-preexisting"
+  mv "$APP_HOME" "${RELEASES}/rel-preexisting" 2>/dev/null || rm -rf "$APP_HOME"
+fi
+ln -sfn "$REL" "$APP_HOME"          # atomic activate
+chown -h "$APP_USER":"$APP_USER" "$APP_HOME" 2>/dev/null || true
+ok "activated ${APP_HOME} -> ${REL}"
+# Keep the newest few releases for rollback; prune older ones.
+ls -1dt "${RELEASES}"/rel-* 2>/dev/null | tail -n +4 | xargs -r rm -rf || true
 
 # ---- systemd: the app service ----------------------------------------------
 step "Installing services"
@@ -350,13 +368,87 @@ WantedBy=multi-user.target
 EOF
 ok "promotion helper installed (watches for a switch to the controller role)"
 
+# ---- self-update helper (staged A/B swap with health-checked rollback) -------
+# 'Update now' in the UI drops an update.request file; this root path unit builds
+# the new version into its own release dir, swaps the ${APP_HOME} symlink to it
+# atomically, restarts, and waits for /healthz. If the new version doesn't come up
+# healthy it relinks to the previous release and restarts — so a bad update can
+# never wedge the device (worst case: still on the previous version). The app is
+# sandboxed and only ever writes the request + reads the status it writes back.
+step "Installing the self-update helper"
+cat > "/usr/local/sbin/${APP}-update" <<EOF
+#!/usr/bin/env bash
+set -u
+APP_USER="${APP_USER}"; APP_HOME="${APP_HOME}"; RELEASES="${RELEASES}"
+DATA_DIR="${DATA_DIR}"; WEB_PORT="${WEB_PORT}"; REPO_URL="${REPO_URL}"
+REQ="\${DATA_DIR}/update.request"; STATUS="\${DATA_DIR}/update.status"
+say(){ printf '{"state":"%s","detail":"%s","when":"%s"}\n' "\$1" "\$2" "\$(date -Is)" >"\$STATUS"; chown \${APP_USER}:\${APP_USER} "\$STATUS" 2>/dev/null || true; }
+prep_venv(){
+  sudo -u \${APP_USER} python3 -m venv --clear "\$1/.venv" >/dev/null 2>&1 || return 1
+  sudo -u \${APP_USER} "\$1/.venv/bin/pip" install --quiet --upgrade pip >/dev/null 2>&1 || return 1
+  sudo -u \${APP_USER} "\$1/.venv/bin/pip" install --quiet -r "\$1/requirements.txt" >/dev/null 2>&1 || return 1
+}
+SRC_REQ="\$(head -c 300 "\$REQ" 2>/dev/null | tr -d '\r\n')"; rm -f "\$REQ"
+PREV="\$(readlink -f "\$APP_HOME" 2>/dev/null)"
+say running "fetching the new version"
+# Source: a local dir override (staging/testing), otherwise a fresh clone of REPO_URL.
+if [ -n "\$SRC_REQ" ] && [ -d "\$SRC_REQ" ] && [ -f "\$SRC_REQ/requirements.txt" ]; then
+  SRC="\$SRC_REQ"
+else
+  SRC="\${DATA_DIR}/_update_src"; rm -rf "\$SRC"
+  if ! git clone --depth 1 "\$REPO_URL" "\$SRC" >/dev/null 2>&1; then say failed "could not download the update (needs internet)"; exit 0; fi
+fi
+REL="\${RELEASES}/rel-\$(date +%s)"; rm -rf "\$REL"; mkdir -p "\$REL"
+cp -a "\$SRC/." "\$REL/"; rm -rf "\$REL/.venv" "\$REL/.git"; chown -R \${APP_USER}:\${APP_USER} "\$REL"
+say running "installing dependencies"
+if ! prep_venv "\$REL"; then say failed "could not prepare the new version; staying on the current one"; rm -rf "\$REL"; exit 0; fi
+say running "switching over"
+ln -sfn "\$REL" "\$APP_HOME"; chown -h \${APP_USER}:\${APP_USER} "\$APP_HOME" 2>/dev/null || true
+systemctl restart signage.service
+ready=0; for i in \$(seq 1 30); do curl -sf "http://localhost:\${WEB_PORT}/healthz" >/dev/null 2>&1 && { ready=1; break; }; sleep 1; done
+if [ "\$ready" = 1 ]; then
+  say done "updated and verified healthy"
+  ls -1dt "\${RELEASES}"/rel-* 2>/dev/null | tail -n +4 | grep -vxF "\$PREV" | xargs -r rm -rf || true
+elif [ -n "\$PREV" ] && [ -d "\$PREV" ]; then
+  ln -sfn "\$PREV" "\$APP_HOME"; chown -h \${APP_USER}:\${APP_USER} "\$APP_HOME" 2>/dev/null || true
+  systemctl restart signage.service; sleep 2; rm -rf "\$REL"
+  say rolled_back "the new version did not start; restored the previous version"
+else
+  say failed "the update did not start and there was no previous version to restore"
+fi
+EOF
+chmod 0755 "/usr/local/sbin/${APP}-update"
+
+cat > "/etc/systemd/system/${APP}-update.service" <<EOF
+[Unit]
+Description=${APP} self-update (staged swap with health-checked rollback)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/${APP}-update
+EOF
+
+cat > "/etc/systemd/system/${APP}-update.path" <<EOF
+[Unit]
+Description=${APP} update watcher
+
+[Path]
+PathExists=${DATA_DIR}/update.request
+Unit=${APP}-update.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ok "self-update helper installed (atomic release swap, auto-rollback on failure)"
+
 systemctl daemon-reload
-systemctl enable "${APP}.service" "${APP}-kiosk.service" "${APP}-promote.path" >/dev/null 2>&1 || true
+systemctl enable "${APP}.service" "${APP}-kiosk.service" "${APP}-promote.path" "${APP}-update.path" >/dev/null 2>&1 || true
 # Use restart (not just enable --now) so re-running the installer to UPDATE
 # actually loads the new code — enable --now is a no-op on an already-running unit.
 systemctl restart "${APP}.service"       >/dev/null 2>&1 || warn "could not start ${APP}.service yet (app code may be incomplete)"
 systemctl restart "${APP}-kiosk.service" >/dev/null 2>&1 || warn "could not start kiosk yet"
 systemctl restart "${APP}-promote.path"  >/dev/null 2>&1 || true
+systemctl restart "${APP}-update.path"   >/dev/null 2>&1 || true
 
 # ---- done -------------------------------------------------------------------
 step "Done"

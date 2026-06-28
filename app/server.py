@@ -47,6 +47,7 @@ from . import (
     promote,
     sessions,
     sync,
+    updater,
 )
 from . import __version__ as APP_VERSION
 
@@ -401,6 +402,12 @@ def create_app() -> FastAPI:
         cfg["shuffle"] = bool(shuffle)
         config.save_config(cfg)
         activity.log("Shuffle turned " + ("on" if cfg["shuffle"] else "off"))
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/api/update")
+    def do_update():
+        updater.request_update()
+        activity.log("Started a software update")
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/promote")
@@ -826,6 +833,22 @@ def _settings_drawer(cfg: dict, role: str) -> str:
           </form>
         </div>"""
 
+    upd = updater.status()
+    upd_line = (f'<p>Last update: <span class="now">{_esc(upd["state"])}</span> &mdash; '
+                f'{_esc(upd.get("detail", ""))}</p>') if upd.get("state") else ""
+    software_section = f"""
+        <div class="section">
+          <h3>Software</h3>
+          <p>Version <span class="now">{_esc(updater.current_version())}</span>. Updates are
+            staged and health-checked &mdash; if a new version doesn't start, the device
+            rolls back to the previous one automatically.</p>
+          {upd_line}
+          <form method="post" action="/api/update"
+                onsubmit="return confirm('Update to the latest version? The screen restarts briefly.');">
+            <button class="btn-accent full" type="submit">Update now</button>
+          </form>
+        </div>"""
+
     return f"""
       <div class="scrim" onclick="toggleSettings()"></div>
       <aside class="drawer" aria-label="Settings">
@@ -860,6 +883,8 @@ def _settings_drawer(cfg: dict, role: str) -> str:
           <p>See device status and a log of recent changes.</p>
           <a class="btn-ghost full" href="/health" style="text-decoration:none">Open health screen</a>
         </div>
+
+        {software_section}
 
         <div class="section">
           <h3>Full-screen view</h3>
