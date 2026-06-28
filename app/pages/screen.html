@@ -20,6 +20,11 @@
   #pair .label{color:#9aa;font-size:20px;margin-bottom:18px}
   #pair .code{font:700 clamp(48px,12vw,140px)/1 ui-monospace,monospace;letter-spacing:.12em;color:#F0A93B}
   #pair .sub{color:#9aa;font-size:16px;margin-top:18px}
+  /* Signage has no operator standing at the screen, so hide the mouse pointer.
+     A top-most transparent layer makes "no cursor" win even over a cross-origin
+     iframe (a parent's cursor style cannot reach inside the embedded frame). */
+  html,body{cursor:none}
+  #shield{position:fixed;inset:0;z-index:9999;cursor:none}
 </style>
 </head>
 <body>
@@ -30,6 +35,7 @@
     <div class="code" id="pairCode"></div>
     <div class="sub">This code disappears in a few minutes.</div>
   </div>
+  <div id="shield"></div>
 
   <script>
     const stage = document.getElementById('stage');
