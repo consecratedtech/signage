@@ -212,6 +212,10 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=${DATA_DIR}
 ProtectHome=true
+# A private, writable /tmp for LibreOffice's IPC pipe during pptx conversion
+# (ProtectSystem=strict makes the real /tmp read-only). The bulk conversion
+# scratch still goes to the disk-backed work dir under ${DATA_DIR}.
+PrivateTmp=true
 
 [Install]
 WantedBy=multi-user.target
