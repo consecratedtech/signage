@@ -236,40 +236,328 @@ def create_app() -> FastAPI:
     return app
 
 
-# --- built-in HTML pages (basic styling; the main control panel is separate) ---
+# --- built-in HTML pages (styled to match pages/setup.html design language) ---
 
 def _esc(text) -> str:
     return _htmllib.escape(str(text))
 
 
-def _page(title: str, body: str, *, dark: bool = False) -> HTMLResponse:
-    bg, fg = ("#0b0b0c", "#f4f4f5") if dark else ("#f7f7f8", "#18181b")
+# Google Fonts used across the control panel (mirrors pages/setup.html).
+_FONTS_HEAD = (
+    '<link rel="preconnect" href="https://fonts.googleapis.com">'
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
+    '<link href="https://fonts.googleapis.com/css2?'
+    'family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700'
+    '&family=Hanken+Grotesk:wght@400;500;600&family=Space+Mono'
+    '&display=swap" rel="stylesheet">'
+)
+
+# Big stylesheet kept as a plain (non-f) string so CSS braces need no escaping.
+_CSS = """
+  :root{
+    --paper:#F4F6F3; --ink:#17211E; --pine:#0F5D54; --pine-deep:#0A4339;
+    --glow:#F0A93B; --glow-soft:rgba(240,169,59,.18); --line:#DBE0DA;
+    --muted:#5C6661; --card:#FFFFFF; --radius:18px;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:var(--paper); color:var(--ink);
+    font:16px/1.55 "Hanken Grotesk",system-ui,sans-serif;
+    min-height:100vh; padding:24px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .stage{width:100%;max-width:720px;margin:0 auto}
+  a{color:var(--pine);text-decoration:none}
+  a:hover{text-decoration:underline}
+
+  /* header */
+  .top{
+    display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    margin-bottom:22px;
+  }
+  .brand{
+    display:flex;align-items:center;gap:9px;
+    font-weight:600;color:var(--muted);letter-spacing:.01em;
+  }
+  .brand .mark{
+    width:18px;height:18px;border-radius:50%;flex:none;
+    background:conic-gradient(from 220deg,var(--pine),var(--glow),var(--pine));
+  }
+  .logo-ph{
+    display:inline-flex;align-items:center;justify-content:center;
+    min-width:64px;height:34px;padding:0 12px;
+    border:1.5px dashed var(--line);border-radius:10px;
+    font-family:"Space Mono",monospace;font-size:.62rem;letter-spacing:.16em;
+    color:var(--muted);text-transform:uppercase;
+  }
+  .name-chip{
+    font-family:"Space Mono",monospace;font-size:.8rem;color:var(--muted);
+    background:var(--card);border:1px solid var(--line);
+    padding:6px 10px;border-radius:9px;white-space:nowrap;
+  }
+  .badge{
+    font-family:"Space Mono",monospace;font-size:.66rem;letter-spacing:.14em;
+    text-transform:uppercase;padding:6px 11px;border-radius:999px;
+    border:1px solid var(--line);color:var(--pine);background:var(--glow-soft);
+  }
+  .badge.controller{color:var(--pine-deep)}
+  .badge.display{color:var(--pine)}
+  .top .spacer{flex:1}
+  .gear{
+    border:1px solid var(--line);background:var(--card);color:var(--ink);
+    font:inherit;font-weight:600;font-size:.9rem;cursor:pointer;
+    padding:9px 14px;border-radius:11px;
+    transition:background .15s ease,border-color .15s ease;
+  }
+  .gear:hover{background:var(--paper);border-color:var(--muted)}
+
+  /* page intro */
+  .eyebrow{
+    font-family:"Space Mono",monospace;font-size:.72rem;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--pine);margin:0 0 8px;
+  }
+  h1{
+    font-family:"Bricolage Grotesque",sans-serif;font-weight:700;
+    font-size:clamp(1.7rem,4vw,2.3rem);line-height:1.06;letter-spacing:-.02em;
+    margin:0 0 6px;
+  }
+  .lead{color:var(--muted);margin:0 0 22px}
+
+  /* cards */
+  .card{
+    background:var(--card);border:1px solid var(--line);
+    border-radius:var(--radius);padding:20px 22px;margin:0 0 18px;
+  }
+  .card h2{
+    font-family:"Bricolage Grotesque",sans-serif;font-weight:600;
+    font-size:1.12rem;letter-spacing:-.01em;margin:0 0 4px;
+    display:flex;align-items:center;gap:8px;
+  }
+  .card .hint{color:var(--muted);font-size:.9rem;margin:0 0 14px}
+  .card .hint.tail{margin:12px 0 0}
+
+  /* forms */
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  label.fld{display:flex;flex-direction:column;gap:5px;font-size:.85rem;color:var(--muted)}
+  input,select{
+    font:inherit;color:var(--ink);background:var(--card);
+    padding:11px 12px;border:1px solid var(--line);border-radius:11px;
+  }
+  input:focus,select:focus{outline:none;border-color:var(--pine)}
+  input[name=url]{flex:1;min-width:220px}
+  input[type=number]{width:96px}
+  input[type=file]{padding:9px 11px}
+
+  /* buttons */
+  button{font:inherit;font-weight:600;cursor:pointer;border:0;border-radius:11px;
+    padding:11px 17px;transition:background .15s ease,transform .12s ease,border-color .15s ease}
+  button:active{transform:translateY(1px)}
+  .btn-primary{background:var(--pine);color:#fff}
+  .btn-primary:hover{background:var(--pine-deep)}
+  .btn-accent{background:var(--glow);color:var(--ink)}
+  .btn-accent:hover{background:#e09a2c}
+  .btn-ghost{background:var(--card);color:var(--ink);border:1px solid var(--line)}
+  .btn-ghost:hover{background:var(--paper);border-color:var(--muted)}
+  .btn-danger{background:#fff;color:#b42318;border:1px solid #f1c9c4}
+  .btn-danger:hover{background:#fdecea;border-color:#e29a93}
+
+  /* lists (playlist items, displays, discovered devices) */
+  .item{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--line)}
+  .item:first-of-type{border-top:0}
+  .item .name{flex:1;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .meta{font-family:"Space Mono",monospace;font-size:.78rem;color:var(--muted)}
+  .item form{margin:0}
+  .item .secs{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--muted)}
+  .item .secs input{width:74px;padding:8px 9px}
+  .x{background:#fff;color:#b42318;border:1px solid #f1c9c4;
+     padding:7px 12px;border-radius:9px;line-height:1}
+  .x:hover{background:#fdecea;border-color:#e29a93}
+  .empty{color:var(--muted)}
+
+  /* pairing code */
+  .code{
+    font-family:"Space Mono",monospace;font-weight:700;font-size:2.1rem;
+    letter-spacing:.2em;text-align:center;color:var(--pine-deep);
+    background:var(--paper);border:1px solid var(--line);
+    border-radius:14px;padding:18px;margin:6px 0 14px;
+  }
+  .status{display:flex;align-items:center;gap:10px;color:var(--muted);margin:0 0 12px}
+  .status .pulse{position:relative;flex:none;width:12px;height:12px}
+  .status .pulse i{position:absolute;inset:0;border-radius:50%;background:var(--glow);
+    box-shadow:0 0 0 0 var(--glow-soft);animation:glow 2.8s ease-in-out infinite}
+  @keyframes glow{0%,100%{box-shadow:0 0 0 0 var(--glow-soft);opacity:.92}
+    50%{box-shadow:0 0 0 10px rgba(240,169,59,0);opacity:1}}
+
+  details summary{cursor:pointer;color:var(--muted);font-size:.9rem;list-style:none}
+  details summary::-webkit-details-marker{display:none}
+  details[open] summary{margin-bottom:10px}
+
+  /* tooltips: CSS-only, driven by data-tip on a small (i) affordance */
+  .tip{position:relative;display:inline-flex;align-items:center;justify-content:center;
+    width:17px;height:17px;border-radius:50%;border:1px solid var(--line);
+    font-family:"Space Mono",monospace;font-size:.62rem;color:var(--muted);
+    background:var(--card);cursor:help;vertical-align:middle;user-select:none}
+  .tip:hover{border-color:var(--pine);color:var(--pine)}
+  .tip::after{
+    content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 9px);
+    transform:translateX(-50%);width:max-content;max-width:250px;
+    background:var(--ink);color:#fff;font-family:"Hanken Grotesk",sans-serif;
+    font-size:.78rem;font-weight:400;line-height:1.4;letter-spacing:normal;
+    text-transform:none;text-align:left;padding:9px 11px;border-radius:10px;
+    opacity:0;visibility:hidden;transition:opacity .14s ease;
+    pointer-events:none;z-index:20;box-shadow:0 6px 22px rgba(10,67,57,.18)}
+  .tip::before{
+    content:"";position:absolute;left:50%;bottom:calc(100% + 3px);
+    transform:translateX(-50%);border:6px solid transparent;border-top-color:var(--ink);
+    opacity:0;visibility:hidden;transition:opacity .14s ease;z-index:20}
+  .tip:hover::after,.tip:hover::before{opacity:1;visibility:visible}
+
+  /* settings drawer */
+  .scrim{position:fixed;inset:0;background:rgba(10,67,57,.28);
+    opacity:0;visibility:hidden;transition:opacity .2s ease;z-index:40}
+  .drawer{
+    position:fixed;top:0;right:0;height:100%;width:min(420px,92vw);
+    background:var(--paper);border-left:1px solid var(--line);
+    box-shadow:-18px 0 50px rgba(10,67,57,.16);
+    transform:translateX(100%);transition:transform .24s ease;
+    z-index:50;overflow-y:auto;padding:24px}
+  body.settings-open .scrim{opacity:1;visibility:visible}
+  body.settings-open .drawer{transform:translateX(0)}
+  .drawer-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+  .drawer-head h2{font-family:"Bricolage Grotesque",sans-serif;font-weight:700;
+    font-size:1.3rem;margin:0}
+  .drawer .close{border:1px solid var(--line);background:var(--card);
+    border-radius:10px;padding:7px 12px;font:inherit;cursor:pointer;color:var(--muted)}
+  .drawer .close:hover{background:var(--paper);border-color:var(--muted)}
+  .drawer .section{background:var(--card);border:1px solid var(--line);
+    border-radius:14px;padding:16px 18px;margin-bottom:14px}
+  .drawer .section h3{font-family:"Bricolage Grotesque",sans-serif;font-weight:600;
+    font-size:1rem;margin:0 0 4px;display:flex;align-items:center;gap:8px}
+  .drawer .section p{color:var(--muted);font-size:.88rem;margin:0 0 12px}
+  .drawer .section .now{font-family:"Space Mono",monospace;color:var(--pine-deep)}
+  .drawer .full{width:100%;justify-content:center;display:flex}
+  .drawer input[name=name]{width:100%;margin-bottom:10px}
+
+  :focus-visible{outline:3px solid var(--glow);outline-offset:2px;border-radius:6px}
+
+  @media (max-width:560px){
+    body{padding:18px}
+    .top{gap:9px}
+    .logo-ph{display:none}
+    .item{flex-wrap:wrap}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .status .pulse i{animation:none}
+  }
+"""
+
+# Friendly, non-technical tooltip copy reused across pages.
+_TIPS = {
+    "display": "A display is a screen that just shows content — slides, images, "
+               "or web pages that a controller sends to it.",
+    "controller": "A controller is the device you manage everything from. It holds "
+                  "the content and pushes it out to your displays.",
+    "pairing": "Pairing links a display to this controller. The display shows a short "
+               "code; type that code here (or on the display) to connect them — like "
+               "pairing a Bluetooth speaker.",
+    "push": "Push sends this controller's current playlist to every paired display, "
+            "so they all start showing the latest content.",
+    "slides": "In Google Slides choose File → Share → Publish to web, then "
+              "paste the link it gives you. That makes a view-only link your displays "
+              "can show without anyone signing in.",
+    "playlist": "The playlist is the list of things that rotate on screen, in order. "
+                "Set how many seconds each item stays up.",
+}
+
+
+def _tip(key: str) -> str:
+    """Small (i) affordance with a CSS-only hover tooltip."""
+    return f'<span class="tip" data-tip="{_esc(_TIPS[key])}" aria-label="More info">i</span>'
+
+
+def _settings_drawer(cfg: dict, role: str) -> str:
+    """Slide-out Settings drawer: rename, role switch, full-screen link."""
+    other = "display" if role == "controller" else "controller"
+    other_label = "Display" if other == "display" else "Controller"
+    role_label = "Controller" if role == "controller" else "Display"
+    other_tip = _TIPS["display"] if other == "display" else _TIPS["controller"]
+    return f"""
+      <div class="scrim" onclick="toggleSettings()"></div>
+      <aside class="drawer" aria-label="Settings">
+        <div class="drawer-head">
+          <h2>Settings</h2>
+          <button class="close" onclick="toggleSettings()">Close</button>
+        </div>
+
+        <div class="section">
+          <h3>Device name</h3>
+          <p>Shown to controllers on the network. This also renames the device itself.</p>
+          <form method="post" action="/api/name">
+            <input name="name" value="{_esc(cfg['name'])}" placeholder="device name" required>
+            <button class="btn-primary full" type="submit">Save name</button>
+          </form>
+        </div>
+
+        <div class="section">
+          <h3>Role <span class="tip" data-tip="{_esc(other_tip)}" aria-label="More info">i</span></h3>
+          <p>This device is currently a <span class="now">{role_label}</span>.</p>
+          <form method="post" action="/api/role"
+                onsubmit="return confirm('Switch this device to {other_label}? You can switch back anytime.');">
+            <input type="hidden" name="role" value="{other}">
+            <button class="btn-accent full" type="submit">Switch to {other_label}</button>
+          </form>
+        </div>
+
+        <div class="section">
+          <h3>Full-screen view</h3>
+          <p>Open the page a screen shows when running as a display.</p>
+          <a class="btn-ghost full" href="/screen" style="text-decoration:none">Open full-screen view</a>
+        </div>
+      </aside>
+    """
+
+
+_SETTINGS_JS = """
+  <script>
+    function toggleSettings(){document.body.classList.toggle('settings-open');}
+    document.addEventListener('keydown',function(e){
+      if(e.key==='Escape')document.body.classList.remove('settings-open');
+    });
+  </script>
+"""
+
+
+def _header(cfg: dict, role: str) -> str:
+    """Consistent header: brand, logo placeholder, name chip, role badge, gear."""
+    badge_label = "Controller" if role == "controller" else "Display"
+    return f"""
+      <header class="top">
+        <span class="brand"><span class="mark"></span> signage</span>
+        <span class="logo-ph" title="Drop your logo here later">Logo</span>
+        <span class="spacer"></span>
+        <span class="name-chip">{_esc(cfg['name'])}</span>
+        <span class="badge {role}">{badge_label}</span>
+        <button class="gear" onclick="toggleSettings()">&#9881; Settings</button>
+      </header>
+    """
+
+
+def _page(title: str, role: str, cfg: dict, body: str) -> HTMLResponse:
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
-<style>
-  *{{box-sizing:border-box}}
-  body{{margin:0;font:16px/1.5 system-ui,sans-serif;background:{bg};color:{fg};
-       min-height:100vh;display:flex;justify-content:center}}
-  .wrap{{width:100%;max-width:640px;padding:32px}}
-  h1{{font-size:1.6rem;margin:0 0 .25rem}}
-  a{{color:#2563eb}}
-  .muted{{opacity:.6;font-size:.9rem}}
-  .card{{background:#fff;border:1px solid #e4e4e7;border-radius:14px;padding:18px;margin:14px 0}}
-  .card b{{display:block;margin-bottom:10px}}
-  .row{{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}}
-  .row input[name=url]{{flex:1;min-width:200px}}
-  input{{padding:10px;border:1px solid #d4d4d8;border-radius:9px;font:inherit}}
-  input[type=number]{{width:90px}}
-  button{{border:0;border-radius:9px;padding:10px 16px;background:#2563eb;color:#fff;font:inherit;cursor:pointer}}
-  .item{{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid #eee}}
-  .item span:first-child{{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
-  .item .x{{background:#ef4444;padding:4px 10px}}
-  .code{{font:700 2rem/1.2 ui-monospace,monospace;letter-spacing:.18em;text-align:center;
-         background:#f1f5f9;border:1px solid #e4e4e7;border-radius:12px;padding:16px;margin:10px 0}}
-</style></head>
-<body><div class="wrap">{body}</div></body></html>"""
+<title>{_esc(title)} · signage</title>
+{_FONTS_HEAD}
+<style>{_CSS}</style></head>
+<body>
+  <main class="stage">
+    {_header(cfg, role)}
+    {body}
+  </main>
+  {_settings_drawer(cfg, role)}
+  {_SETTINGS_JS}
+</body></html>"""
     return HTMLResponse(html)
 
 
@@ -277,50 +565,52 @@ def _splash(cfg: dict) -> HTMLResponse:
     return HTMLResponse(_SETUP_HTML.replace("__DEVICE_NAME__", cfg["name"]))
 
 
-def _content_body(cfg: dict, role_label: str) -> str:
+def _content_body(cfg: dict) -> str:
+    """Content management shared by both roles: add URL/Slides, upload, playlist."""
     items = library.list_items()
     if items:
         rows = ""
         for it in items:
             rows += f"""
               <div class="item">
-                <span>{_esc(it['name'])}</span>
-                <span class="muted">{it['seconds']}s</span>
-                <form method="post" action="/api/content/remove" style="margin:0">
+                <span class="name">{_esc(it['name'])}</span>
+                <span class="meta">{it['seconds']}s</span>
+                <form method="post" action="/api/content/remove">
                   <input type="hidden" name="item_id" value="{it['id']}">
                   <button class="x" title="Remove">&times;</button>
                 </form>
               </div>"""
-        playlist = f'<div class="card"><b>Playlist</b>{rows}</div>'
+        playlist_inner = rows
     else:
-        playlist = ('<div class="card"><b>Playlist</b><br>'
-                    '<span class="muted">Nothing yet — add a link or upload below.</span></div>')
+        playlist_inner = ('<p class="empty">Nothing yet — add a link or upload '
+                          'something below.</p>')
 
     return f"""
-      <h1>{role_label}</h1>
-      <p class="muted">{_esc(cfg['name'])} · <a href="/screen">open full-screen view</a></p>
-
       <div class="card">
-        <b>Add a web page or Google Slides</b>
+        <h2>Add a web page or Google Slides {_tip('slides')}</h2>
+        <p class="hint">Paste any web address, or a Google Slides
+          &ldquo;Publish to web&rdquo; link.</p>
         <form method="post" action="/api/content/url" class="row">
           <input name="url" placeholder="https://… or a Google Slides 'Publish to web' link" required>
-          <input name="seconds" type="number" min="3" value="15" title="seconds">
-          <button>Add</button>
+          <input name="seconds" type="number" min="3" value="15" title="seconds on screen">
+          <button class="btn-primary" type="submit">Add</button>
         </form>
-        <span class="muted">For Google Slides: File → Share → Publish to web, then paste the link.</span>
       </div>
 
       <div class="card">
-        <b>Upload an image or PowerPoint</b>
+        <h2>Upload an image or PowerPoint</h2>
+        <p class="hint">PowerPoint is converted to slides automatically.</p>
         <form method="post" action="/api/content/upload" enctype="multipart/form-data" class="row">
           <input name="file" type="file" accept="image/*,.pptx,.ppt" required>
           <input name="seconds" type="number" min="3" value="10" title="seconds per image">
-          <button>Upload</button>
+          <button class="btn-primary" type="submit">Upload</button>
         </form>
-        <span class="muted">PowerPoint is converted to slides automatically.</span>
       </div>
 
-      {playlist}
+      <div class="card">
+        <h2>Playlist {_tip('playlist')}</h2>
+        {playlist_inner}
+      </div>
     """
 
 
@@ -328,58 +618,106 @@ def _display_home(cfg: dict) -> HTMLResponse:
     code = pairing.current_code()
     if code:
         section = f"""
-          <div class="card"><b>Pairing</b>
-            <p>On your controller, pick this display and enter this code:</p>
-            <div class="code">{code}</div>
-            <p class="muted">Valid for 3 minutes. It also shows on the screen itself.</p>
-            <form method="post" action="/api/pair/cancel"><button class="x">Cancel</button></form>
+          <div class="card">
+            <h2>Pairing {_tip('pairing')}</h2>
+            <p class="hint">On your controller, pick this display and enter this code:</p>
+            <div class="code">{_esc(code)}</div>
+            <div class="status"><span class="pulse"><i></i></span>
+              Waiting to connect · valid for 3 minutes. It also shows on the screen itself.</div>
+            <form method="post" action="/api/pair/cancel">
+              <button class="btn-danger" type="submit">Cancel pairing</button>
+            </form>
           </div>"""
     elif pairing.is_claimed():
         controller = pairing.get_controller() or {}
         section = f"""
-          <div class="card"><b>Paired</b><br>
-            <span class="muted">Controlled by {_esc(controller.get('name') or 'a controller')}.</span>
-            <form method="post" action="/api/pair/start" style="margin-top:10px"><button>Re-pair</button></form>
+          <div class="card">
+            <h2>Paired {_tip('pairing')}</h2>
+            <p class="hint">Controlled by
+              <b>{_esc(controller.get('name') or 'a controller')}</b>.
+              Content sent from there will appear on this screen.</p>
+            <form method="post" action="/api/pair/start">
+              <button class="btn-ghost" type="submit">Re-pair to another controller</button>
+            </form>
           </div>"""
     else:
-        section = """
-          <div class="card"><b>Pair to a controller</b>
-            <p class="muted">Start pairing, then enter the code on your controller.</p>
-            <form method="post" action="/api/pair/start"><button>Start pairing</button></form>
+        section = f"""
+          <div class="card">
+            <h2>Pair to a controller {_tip('pairing')}</h2>
+            <p class="hint">Start pairing, then enter the code it shows on your controller.</p>
+            <form method="post" action="/api/pair/start">
+              <button class="btn-primary" type="submit">Start pairing</button>
+            </form>
           </div>"""
-    return _page("Display", section + _content_body(cfg, "Display"))
+
+    intro = f"""
+      <p class="eyebrow">This device shows content {_tip('display')}</p>
+      <h1>Display</h1>
+      <p class="lead">Pair it to a controller, or add content directly below.</p>
+    """
+    return _page("Display", "display", cfg, intro + section + _content_body(cfg))
 
 
 def _control_home(cfg: dict) -> HTMLResponse:
+    # Controller's own content + push live ON TOP; paired displays at the BOTTOM.
+    push = f"""
+      <div class="card">
+        <h2>Push to all displays {_tip('push')}</h2>
+        <p class="hint">Sends this controller's playlist to every paired display.</p>
+        <button class="btn-accent" onclick="pushAll()">Push to all displays</button>
+        <div id="pushResult" class="hint tail"></div>
+      </div>
+      <script>
+      async function pushAll(){{
+        const box=document.getElementById('pushResult');
+        box.textContent='Sending…';
+        try{{
+          const r=await fetch('/api/push',{{method:'POST'}});
+          const d=await r.json();
+          if(d.message){{box.textContent=d.message;return;}}
+          const ok=d.results.filter(x=>x.ok).length;
+          const fail=d.results.filter(x=>!x.ok);
+          box.textContent=`Sent to ${{ok}} display(s).`+(fail.length?` Failed: ${{fail.map(f=>f.name).join(', ')}}.`:'');
+        }}catch(e){{box.textContent='Push failed.';}}
+      }}
+      </script>"""
+
     displays = pairing.list_displays()
     if displays:
         rows = ""
         for d in displays:
             rows += f"""
               <div class="item">
-                <span>{_esc(d['name'] or d['device_id'][:8])}</span>
-                <span class="muted">{_esc(d['address'])}</span>
-                <form method="post" action="/api/displays/remove" style="margin:0">
+                <span class="name">{_esc(d['name'] or d['device_id'][:8])}</span>
+                <span class="meta">{_esc(d['address'])}</span>
+                <form method="post" action="/api/displays/remove">
                   <input type="hidden" name="device_id" value="{d['device_id']}">
                   <button class="x" title="Unpair">&times;</button>
                 </form>
               </div>"""
-        screens = f'<div class="card"><b>Your displays</b>{rows}</div>'
+        screens_inner = rows
     else:
-        screens = ('<div class="card"><b>Your displays</b><br>'
-                   '<span class="muted">None paired yet — find one below.</span></div>')
+        screens_inner = ('<p class="empty">No displays paired yet — '
+                         'find one below.</p>')
 
     find = """
-      <div class="card"><b>Find displays</b>
-        <button onclick="findDisplays()">Refresh</button>
-        <div id="found" class="muted" style="margin-top:12px">Tap Refresh to scan the network.</div>
-        <details style="margin-top:12px">
-          <summary class="muted">Add by address (fallback)</summary>
-          <form method="post" action="/api/displays/add" class="row" style="margin-top:8px">
+      <div class="card">
+        <h2>Paired displays</h2>
+        <div id="displays">__SCREENS__</div>
+      </div>
+
+      <div class="card">
+        <h2>Find displays <span class="tip" data-tip="__PAIR_TIP__" aria-label="More info">i</span></h2>
+        <p class="hint">Scan the network for displays that are ready to pair.</p>
+        <button class="btn-primary" onclick="findDisplays()">Find displays</button>
+        <div id="found" class="hint tail">Tap &ldquo;Find displays&rdquo; to scan the network.</div>
+        <details style="margin-top:14px">
+          <summary>Add by address (fallback)</summary>
+          <form method="post" action="/api/displays/add" class="row">
             <input name="address" placeholder="192.168.1.50" required>
             <input name="port" type="number" value="8080">
             <input name="code" placeholder="CODE" required style="width:120px">
-            <button>Pair</button>
+            <button class="btn-ghost" type="submit">Pair</button>
           </form>
         </details>
       </div>
@@ -393,38 +731,23 @@ def _control_home(cfg: dict) -> HTMLResponse:
           const list=(d.devices||[]).filter(x=>x.role!=='controller');
           if(!list.length){box.textContent='No displays found. Start pairing on the display, or use Add by address.';return;}
           box.innerHTML=list.map(x=>`<div class="item">
-            <span>${x.name||x.address}</span><span class="muted">${x.address}</span>
-            ${x.paired?'<span class="muted">paired</span>':
+            <span class="name">${x.name||x.address}</span><span class="meta">${x.address}</span>
+            ${x.paired?'<span class="meta">paired</span>':
               `<form method="post" action="/api/displays/add" style="margin:0">
                  <input type="hidden" name="address" value="${x.address}">
                  <input type="hidden" name="port" value="${x.port}">
                  <input name="code" placeholder="CODE" required style="width:110px">
-                 <button>Pair</button>
+                 <button class="btn-primary" type="submit">Pair</button>
                </form>`}
           </div>`).join('');
         }catch(e){box.textContent='Scan failed.';}
       }
       </script>"""
+    find = find.replace("__SCREENS__", screens_inner).replace("__PAIR_TIP__", _esc(_TIPS["pairing"]))
 
-    push = """
-      <div class="card"><b>Send content to your displays</b>
-        <p class="muted">Pushes this controller's playlist to every paired display.</p>
-        <button onclick="pushAll()">Push to all displays</button>
-        <div id="pushResult" class="muted" style="margin-top:10px"></div>
-      </div>
-      <script>
-      async function pushAll(){
-        const box=document.getElementById('pushResult');
-        box.textContent='Sending…';
-        try{
-          const r=await fetch('/api/push',{method:'POST'});
-          const d=await r.json();
-          if(d.message){box.textContent=d.message;return;}
-          const ok=d.results.filter(x=>x.ok).length;
-          const fail=d.results.filter(x=>!x.ok);
-          box.textContent=`Sent to ${ok} display(s).`+(fail.length?` Failed: ${fail.map(f=>f.name).join(', ')}.`:'');
-        }catch(e){box.textContent='Push failed.';}
-      }
-      </script>"""
-
-    return _page("Controller", screens + find + push + _content_body(cfg, "Controller"))
+    intro = f"""
+      <p class="eyebrow">This device runs the controls {_tip('controller')}</p>
+      <h1>Controller</h1>
+      <p class="lead">Build your playlist, then push it out to your displays.</p>
+    """
+    return _page("Controller", "controller", cfg, intro + _content_body(cfg) + push + find)
