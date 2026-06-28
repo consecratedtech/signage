@@ -117,7 +117,11 @@ def _count_slides(url: str) -> int:
     try:
         fetch = url.replace("/embed", "/pub", 1)
         req = urllib.request.Request(fetch, headers={"User-Agent": _SLIDES_UA})
-        with urllib.request.urlopen(req, timeout=6) as resp:
+        # 15s, not a few seconds: the published page is several MB and a field /
+        # Wi-Fi connection is often slow. Measuring is worth the wait — it only
+        # blocks the one add request (the route runs off the event loop), and push
+        # retries it anyway. A truly offline add fails the connect fast, not here.
+        with urllib.request.urlopen(req, timeout=15) as resp:
             html = resp.read(8_000_000).decode("utf-8", "replace")
         # Each slide is an array ["gID_0_N",<index>,"title",...] in the model.
         n = len(re.findall(r'\["g[0-9a-z]+_\d+_\d+",\d+,"', html))

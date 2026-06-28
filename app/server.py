@@ -509,6 +509,11 @@ def create_app() -> FastAPI:
         displays = pairing.list_displays()
         if not displays:
             return {"results": [], "message": "No displays paired yet."}
+        # Best-effort: (re)measure any Google Slides deck we couldn't size yet, so a
+        # deck added on a slow/flaky connection still gets its full-deck timing.
+        for it in library.list_items():
+            if it["type"] == "url" and not it.get("slides") and library._is_google_slides(it.get("ref", "")):
+                library.measure_slides(it["id"])
         base_url = f"http://{discovery.primary_ip()}:{config.PORT}"
         # Each display gets only the items aimed at it (untargeted items go to all).
         results = sync.push_targeted(
@@ -1098,6 +1103,8 @@ def _content_body(cfg: dict, displays=None) -> str:
             is_gslides = it["type"] == "url" and it.get("slides")
             is_show = it["type"] == "slideshow"
             is_video = it["type"] == "video"
+            is_slides_raw = (it["type"] == "url" and not it.get("slides")
+                             and library._is_google_slides(it.get("ref", "")))
             secs_form = f"""
                 <form class="secs" method="post" action="/api/content/seconds">
                   <input type="hidden" name="item_id" value="{it['id']}">
@@ -1121,6 +1128,10 @@ def _content_body(cfg: dict, displays=None) -> str:
                          title="Seconds (0 = play the whole video)" aria-label="Seconds (0 = play the whole video)">
                   <button class="btn-ghost set" title="Save time">Set</button>
                 </form>"""
+            elif is_slides_raw:
+                note = ('<span class="slidenote">&#9654; Google Slides &mdash; couldn\'t read its '
+                        'length; set the seconds to cover the whole deck</span>')
+                secs_html = secs_form.replace("{title}", "Seconds (cover the whole deck)")
             else:
                 note = ""
                 secs_html = secs_form.replace("{title}", "Seconds on screen")
