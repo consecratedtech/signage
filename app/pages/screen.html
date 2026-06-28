@@ -93,6 +93,8 @@
             const qi = document.getElementById('qrIdle'), qp = document.getElementById('qrPair');
             qi.onload = () => { qi.style.display = 'block'; document.getElementById('qrIdleCap').style.display = 'block'; };
             qp.onload = () => { qp.style.display = 'block'; };
+            // if the QR can't be fetched, allow a retry on the next poll
+            qi.onerror = qp.onerror = () => { lastUrl = ''; };
             qi.src = qsrc; qp.src = qsrc;
           }
         }
@@ -188,7 +190,21 @@
     // so it always restarts at slide 1 and plays through in order — otherwise a
     // hidden deck keeps auto-advancing and reappears on a random slide. We hold
     // the previous layer up until the deck has loaded, so there is no black gap.
+    // An in-flight Slides reveal (its reload onload + fail-safe timer). Tracked so
+    // a re-entrant show()/activate() — e.g. a 10s poll landing during the deck's
+    // load window — can cancel it instead of leaving a second rotation loop
+    // running (double-speed advance) or revealing a now-stale slide.
+    let pendingSlide = null;
+    function clearPendingSlide() {
+      if (pendingSlide) {
+        clearTimeout(pendingSlide.timer);
+        pendingSlide.iframe.onload = null;
+        pendingSlide = null;
+      }
+    }
+
     function activate(idx, after) {
+      clearPendingSlide();            // cancel any Slides reveal still in flight
       const entry = layers[idx];
       const reveal = () => {
         layers.forEach((e, n) => e.el.classList.toggle('active', n === idx));
@@ -197,10 +213,10 @@
       if (entry && entry.slides) {
         const iframe = entry.el.querySelector('iframe');
         let done = false;
-        const go = () => { if (done) return; done = true; reveal(); };
+        const go = () => { if (done) return; done = true; clearPendingSlide(); reveal(); };
         iframe.onload = go;
         iframe.src = entry.src;       // reassigning src reloads the deck → slide 1
-        setTimeout(go, 3000);         // fail-safe if onload never fires
+        pendingSlide = { iframe, timer: setTimeout(go, 3000) };  // fail-safe if onload never fires
       } else {
         reveal();
       }
@@ -208,6 +224,7 @@
 
     function show() {
       if (timer) clearTimeout(timer);
+      clearPendingSlide();            // no stale Slides reveal across a re-render
       if (!items.length) {            // nothing to play → show the idle/setup screen
         idle.style.display = 'flex';
         layers.forEach(e => e.el.classList.remove('active'));

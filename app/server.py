@@ -151,7 +151,7 @@ def create_app() -> FastAPI:
     def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
         ip = request.client.host if request.client else "?"
         if _throttled(ip):
-            return _login_page(current(), "Too many attempts. Wait a minute, then try again.")
+            return _login_page(current(), "Too many attempts. Wait a few minutes, then try again.")
         if auth.verify(username.strip(), password):
             _login_fails.pop(ip, None)
             resp = RedirectResponse("/", status_code=303)
@@ -171,16 +171,16 @@ def create_app() -> FastAPI:
         return resp
 
     @app.post("/api/password/set")
-    def password_set(request: Request, username: str = Form(...),
-                     password: str = Form(...), current_password: str = Form(default="")):
-        # Changing an existing password needs a live session or the current one;
-        # setting the very first password is open, like first-run setup.
-        if auth.has_credentials() and not _authed(request) and not auth.verify_password(current_password):
-            return JSONResponse({"error": "current password required"}, status_code=403)
+    def password_set(request: Request, username: str = Form(...), password: str = Form(...)):
+        # The middleware already gates this: setting the FIRST password is open
+        # (like first-run setup); CHANGING one requires a live session. So the
+        # caller is authorized by the time we get here.
         if len(password) < 6:
             return JSONResponse({"error": "Password must be at least 6 characters."}, status_code=400)
         first = not auth.has_credentials()
         auth.set_credentials(username.strip() or "admin", password)
+        if not first:
+            sessions.clear_all()  # a password change evicts every other session
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie(sessions.COOKIE_NAME, sessions.create(),
                         httponly=True, samesite="lax", max_age=sessions.TTL, path="/")
@@ -188,9 +188,8 @@ def create_app() -> FastAPI:
         return resp
 
     @app.post("/api/password/clear")
-    def password_clear(request: Request, current_password: str = Form(default="")):
-        if not _authed(request) and not auth.verify_password(current_password):
-            return JSONResponse({"error": "current password required"}, status_code=403)
+    def password_clear(request: Request):
+        # Reachable only with a live session (the middleware gates it).
         auth.clear_credentials()
         sessions.clear_all()
         activity.log("Removed the control-panel password — the panel is open again")
@@ -296,16 +295,18 @@ def create_app() -> FastAPI:
     def qr_png():
         """A QR code for this device's address, shown on the idle/setup screen so
         someone can open the control panel by scanning instead of typing an IP.
-        The encoded address is always this device's own — never client input."""
+        The encoded address is always this device's own — never client input.
+        Any failure (missing qrcode/Pillow, render error) degrades to 404 so the
+        screen simply hides the QR rather than erroring."""
         try:
             import qrcode  # local import: a missing optional dep must not block boot
+            url = f"http://{discovery.primary_ip()}:{config.PORT}"
+            img = qrcode.make(url)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            return Response(content=buf.getvalue(), media_type="image/png")
         except Exception:
             return Response(status_code=404)
-        url = f"http://{discovery.primary_ip()}:{config.PORT}"
-        img = qrcode.make(url)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        return Response(content=buf.getvalue(), media_type="image/png")
 
     # --- content ------------------------------------------------------------
 

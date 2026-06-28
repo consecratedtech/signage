@@ -21,8 +21,13 @@ def _reset_password() -> None:
     """
     from . import auth
     config.DATA.mkdir(parents=True, exist_ok=True)
+    had = auth.has_credentials()
     auth.clear_credentials()
-    print("Control-panel password removed. The panel is open again on this device.")
+    print(f"Data dir: {config.DATA}")
+    if had:
+        print("Control-panel password removed. The panel is open again on this device.")
+    else:
+        print("No control-panel password was set here; nothing to remove.")
 
 
 def main() -> None:

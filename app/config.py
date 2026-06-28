@@ -21,7 +21,13 @@ def _default_data_dir() -> Path:
     if env:
         return Path(env)
     system = Path("/var/lib/signage")
-    if os.access(system.parent, os.W_OK):  # can we create/write it?
+    # Use the production dir if it already exists and we can write it (the service
+    # user owns it, 0700), or if we could create it (running as root / installer).
+    # Checking the dir ITSELF — not just its parent — is what lets the unprivileged
+    # service user resolve the right dir with no env set, e.g. the `reset-password`
+    # recovery command run as `signage` (/var/lib is root-owned, so the old
+    # parent-only check sent it to ~/.local and silently cleared the wrong vault).
+    if (system.is_dir() and os.access(system, os.W_OK)) or os.access(system.parent, os.W_OK):
         return system
     return Path.home() / ".local" / "share" / "signage"
 
