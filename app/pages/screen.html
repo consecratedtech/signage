@@ -32,6 +32,13 @@
   #pair .label{color:#9aa;font-size:20px;margin-bottom:18px}
   #pair .code{font:700 clamp(48px,12vw,140px)/1 ui-monospace,monospace;letter-spacing:.12em;color:#F0A93B}
   #pair .sub{color:#9aa;font-size:16px;margin-top:18px}
+  /* Always-on address badge: lets an operator read this device's IP/URL while
+     content is playing — useful after a reboot when DHCP may hand out a new
+     address. Hidden on the idle screen, which already shows the address big. */
+  #addr{position:fixed;left:14px;bottom:12px;z-index:5;display:none;
+        font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;
+        color:#fff;background:rgba(8,10,12,.5);padding:7px 11px;border-radius:8px;
+        pointer-events:none}
 </style>
 </head>
 <body>
@@ -47,6 +54,7 @@
     <div class="code" id="pairCode"></div>
     <div class="sub">This code disappears in a few minutes. · This screen: <span class="url" id="pairUrl"></span></div>
   </div>
+  <div id="addr"></div>
 
   <script>
     const stage = document.getElementById('stage');
@@ -71,6 +79,7 @@
         if (data.connect_url) {
           document.getElementById('connectUrl').textContent = data.connect_url;
           document.getElementById('pairUrl').textContent = data.connect_url;
+          document.getElementById('addr').textContent = data.connect_url;
         }
 
         // pairing code overlay (shown over whatever is playing)
@@ -145,8 +154,9 @@
 
     function show() {
       if (timer) clearTimeout(timer);
-      if (!items.length) { idle.style.display = 'flex'; return; }
-      idle.style.display = 'none';
+      const addr = document.getElementById('addr');
+      if (!items.length) { idle.style.display = 'flex'; addr.style.display = 'none'; return; }
+      idle.style.display = 'none'; addr.style.display = 'block';
       const i = pos % items.length;
       // Crossfade: reveal the active layer, fade the rest. Inactive layers stay
       // in the DOM at opacity:0 so their iframes keep running in the background.
