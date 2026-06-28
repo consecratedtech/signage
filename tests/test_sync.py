@@ -150,3 +150,21 @@ def test_receive_accepts_valid_url_only_manifest(clean_data_dir):
 def test_screen_items_none_when_nothing_received(clean_data_dir):
     # Fresh data dir -> no received.json yet.
     assert sync.screen_items() is None
+
+
+# --- per-display targeting --------------------------------------------------
+
+def test_items_for_display_targeting():
+    items = [
+        {"id": "1", "type": "url", "ref": "x", "seconds": 5},                       # all
+        {"id": "2", "type": "url", "ref": "y", "seconds": 5, "targets": ["A"]},     # only A
+        {"id": "3", "type": "url", "ref": "z", "seconds": 5, "targets": ["B", "C"]},  # B, C
+    ]
+    assert [i["id"] for i in sync.items_for_display(items, "A")] == ["1", "2"]
+    assert [i["id"] for i in sync.items_for_display(items, "B")] == ["1", "3"]
+    assert [i["id"] for i in sync.items_for_display(items, "D")] == ["1"]  # untargeted only
+
+
+def test_items_for_display_empty_targets_means_all():
+    items = [{"id": "1", "type": "url", "ref": "x", "seconds": 5, "targets": []}]
+    assert [i["id"] for i in sync.items_for_display(items, "anyone")] == ["1"]

@@ -332,6 +332,36 @@ def test_set_seconds_nonvideo_still_has_floor():
     assert library.list_items()[0]["seconds"] == library.MIN_SECONDS
 
 
+# --- per-display targeting + asset cleanup ----------------------------------
+
+def test_set_targets_and_clear():
+    a = library.add_url("a.com")
+    library.set_targets(a["id"], ["dev1", "dev2"])
+    assert library.list_items()[0]["targets"] == ["dev1", "dev2"]
+    library.set_targets(a["id"], [])           # empty == all screens → field removed
+    assert "targets" not in library.list_items()[0]
+
+
+def test_set_targets_strips_blanks():
+    a = library.add_url("a.com")
+    library.set_targets(a["id"], ["", "dev1", ""])
+    assert library.list_items()[0]["targets"] == ["dev1"]
+
+
+def test_remove_deletes_image_asset():
+    item = library.add_image("p.png", b"\x89PNGdata")
+    path = library.asset_path(item["ref"])
+    assert path.exists()
+    library.remove(item["id"])
+    assert not path.exists()
+
+
+def test_remove_url_item_has_no_asset_and_does_not_error():
+    a = library.add_url("a.com")
+    library.remove(a["id"])  # no local file to delete; must not raise
+    assert library.list_items() == []
+
+
 def test_add_video_path_moves_file_into_assets(tmp_path):
     src = tmp_path / "clip.webm"
     src.write_bytes(b"\x1aE\xdf\xa3video-bytes")

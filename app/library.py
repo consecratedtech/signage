@@ -244,8 +244,44 @@ def add_pptx(filename: str, data: bytes, seconds: int = DEFAULT_IMAGE_SECONDS) -
         work_pptx.unlink(missing_ok=True)
 
 
+def _delete_assets(item: dict) -> None:
+    """Delete the on-disk files an item owns, so removing it doesn't leave orphans.
+    URL / YouTube / direct-link items own no local files."""
+    refs = []
+    if item.get("type") == "image" and item.get("ref"):
+        refs = [item["ref"]]
+    elif item.get("type") == "slideshow":
+        refs = item.get("refs", [])
+    elif item.get("type") == "video" and not str(item.get("ref", "")).startswith("http"):
+        refs = [item["ref"]]
+    for ref in refs:
+        try:
+            (ASSETS / ref).unlink()
+        except OSError:
+            pass
+
+
 def remove(item_id: str) -> None:
-    _save([i for i in _load() if i["id"] != item_id])
+    items = _load()
+    gone = next((i for i in items if i["id"] == item_id), None)
+    _save([i for i in items if i["id"] != item_id])
+    if gone:
+        _delete_assets(gone)
+
+
+def set_targets(item_id: str, targets) -> None:
+    """Choose which displays an item plays on. An empty list means every screen
+    (the default); a list of device IDs limits it to those displays."""
+    chosen = [t for t in (targets or []) if t]
+    items = _load()
+    for it in items:
+        if it["id"] == item_id:
+            if chosen:
+                it["targets"] = chosen
+            else:
+                it.pop("targets", None)
+            break
+    _save(items)
 
 
 def reorder(order: list) -> None:

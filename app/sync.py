@@ -101,6 +101,29 @@ def push_all(displays: list, manifest: dict, site_key: str) -> list:
     return results
 
 
+def items_for_display(items: list, device_id: str) -> list:
+    """The items a given display should play: untargeted items (shown on every
+    screen) plus items that explicitly target this display."""
+    return [it for it in items if not it.get("targets") or device_id in it["targets"]]
+
+
+def push_targeted(displays: list, items: list, from_name: str, base_url: str, site_key: str) -> list:
+    """Per-display targeting: build each display its own manifest from the items
+    aimed at it, sign it, and push. Untargeted items stack onto every display."""
+    results = []
+    for d in displays:
+        mine = items_for_display(items, d["device_id"])
+        manifest = build_manifest(mine, from_name, base_url)
+        signature = commands.sign(site_key, canon(manifest))
+        url = f"http://{d['address']}:{d['port']}/api/playlist"
+        try:
+            post_json(url, {"manifest": manifest, "signature": signature})
+            results.append({"name": d.get("name") or d["device_id"][:8], "ok": True, "count": len(mine)})
+        except Exception as exc:
+            results.append({"name": d.get("name") or d["device_id"][:8], "ok": False, "error": str(exc)})
+    return results
+
+
 # --- display side -----------------------------------------------------------
 
 def _save(playlist: dict) -> None:

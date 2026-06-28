@@ -220,7 +220,7 @@ def create_app() -> FastAPI:
         if role not in config.VALID_ROLES:
             return _splash(cfg)
         if role == "controller":
-            return _control_home(cfg)
+            return _control_home(cfg, device_id)
         return _display_home(cfg)
 
     @app.get("/health", response_class=HTMLResponse)
@@ -269,7 +269,7 @@ def create_app() -> FastAPI:
             items = pushed
         else:
             items = []
-            for item in library.list_items():
+            for item in sync.items_for_display(library.list_items(), device_id):
                 if item["type"] == "url":
                     items.append({"type": "url", "src": item["ref"], "seconds": item["seconds"]})
                 elif item["type"] == "slideshow":
@@ -388,6 +388,13 @@ def create_app() -> FastAPI:
             library.move(item_id, direction)
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/api/content/targets")
+    def content_targets(item_id: str = Form(...), display: list[str] = Form(default=[])):
+        # No displays checked = show on every screen; otherwise just the chosen ones.
+        library.set_targets(item_id, display)
+        activity.log("Changed which screens an item shows on")
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/api/playback")
     def set_playback(shuffle: str = Form(default="")):
         cfg = current()
@@ -492,8 +499,10 @@ def create_app() -> FastAPI:
         if not displays:
             return {"results": [], "message": "No displays paired yet."}
         base_url = f"http://{discovery.primary_ip()}:{config.PORT}"
-        manifest = sync.build_manifest(library.list_items(), current()["name"], base_url)
-        results = sync.push_all(displays, manifest, auth.get_or_create_site_key())
+        # Each display gets only the items aimed at it (untargeted items go to all).
+        results = sync.push_targeted(
+            displays, library.list_items(), current()["name"], base_url, auth.get_or_create_site_key()
+        )
         ok = sum(1 for r in results if r.get("ok"))
         activity.log(f"Pushed content to {ok} of {len(results)} display(s)")
         return {"results": results}
@@ -631,6 +640,15 @@ _CSS = """
   .item .name .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .slidenote{font-family:"Space Mono",monospace;font-size:.7rem;color:var(--muted);margin-top:2px}
   .secs.auto{font-family:"Space Mono",monospace;font-size:.72rem;color:var(--muted);align-self:center;padding:8px 10px}
+  /* per-item 'which screens' control */
+  .tgt{margin-top:3px}
+  .tgt>summary{font-family:"Space Mono",monospace;font-size:.7rem;color:var(--muted);cursor:pointer;list-style:none}
+  .tgt>summary::-webkit-details-marker{display:none}
+  .tgt[open]>summary{color:var(--pine)}
+  .tgt form{margin:6px 0 2px;display:flex;flex-direction:column;gap:4px}
+  .tgt .thint{margin:0;color:var(--muted);font-size:.7rem}
+  .tgtbox{display:flex;align-items:center;gap:6px;font-size:.82rem;font-weight:400;cursor:pointer}
+  .tgtbox input{width:15px;height:15px;accent-color:var(--pine)}
   .item .meta{font-family:"Space Mono",monospace;font-size:.78rem;color:var(--muted)}
   .item form{margin:0}
   .item .secs{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--muted)}
@@ -1018,9 +1036,29 @@ def _health_body(cfg: dict, role: str, device_id: str, started: float) -> str:
     return intro + status_card + log_card
 
 
-def _content_body(cfg: dict) -> str:
+def _targets_control(it: dict, displays) -> str:
+    """Per-item 'which screens' control, shown on a controller with paired displays.
+    No box checked = every screen; otherwise just the chosen displays."""
+    if not displays:
+        return ""
+    tgt = it.get("targets") or []
+    boxes = ""
+    for d in displays:
+        did = d["device_id"]
+        chk = " checked" if did in tgt else ""
+        boxes += (f'<label class="tgtbox"><input type="checkbox" name="display" value="{_esc(did)}"'
+                  f'{chk} onchange="this.form.submit()"> {_esc(d.get("name") or did[:8])}</label>')
+    summ = "All screens" if not tgt else f"{len(tgt)} screen(s)"
+    return (f'<details class="tgt"><summary>On: {summ}</summary>'
+            f'<form method="post" action="/api/content/targets">'
+            f'<input type="hidden" name="item_id" value="{it["id"]}">'
+            f'<p class="thint">Leave all unchecked to show on every screen.</p>'
+            f'{boxes}</form></details>')
+
+
+def _content_body(cfg: dict, displays=None) -> str:
     """Content management shared by both roles: add URL/Slides, upload, and the
-    playlist with per-item ordering + timing."""
+    playlist with per-item ordering, timing, and (on a controller) which screens."""
     items = library.list_items()
     if items:
         rows = ""
@@ -1057,6 +1095,7 @@ def _content_body(cfg: dict) -> str:
             else:
                 note = ""
                 secs_html = secs_form.replace("{title}", "Seconds on screen")
+            targets_html = _targets_control(it, displays)
             rows += f"""
               <div class="item">
                 <span class="ord">
@@ -1071,7 +1110,7 @@ def _content_body(cfg: dict) -> str:
                     <button class="mv" title="Move down" aria-label="Move down"{dn_dis}>&#9660;</button>
                   </form>
                 </span>
-                <span class="name"><span class="nm">{_esc(it['name'])}</span>{note}</span>
+                <span class="name"><span class="nm">{_esc(it['name'])}</span>{note}{targets_html}</span>
                 {secs_html}
                 <form method="post" action="/api/content/remove">
                   <input type="hidden" name="item_id" value="{it['id']}">
@@ -1193,7 +1232,7 @@ def _promote_banner(conv: dict) -> str:
             f'<form method="post" action="/api/promote"><button class="btn-accent" type="submit">Install PowerPoint support</button></form></div>')
 
 
-def _control_home(cfg: dict) -> HTMLResponse:
+def _control_home(cfg: dict, device_id: str = "") -> HTMLResponse:
     # Controller's own content + push live ON TOP; paired displays at the BOTTOM.
     banner = _promote_banner(promote.conversion_state())
     push = f"""
@@ -1286,4 +1325,7 @@ def _control_home(cfg: dict) -> HTMLResponse:
       <h1>Controller</h1>
       <p class="lead">Build your playlist, then push it out to your displays.</p>
     """
-    return _page("Controller", "controller", cfg, intro + banner + _content_body(cfg) + push + find)
+    # Targeting offers this controller's own screen plus every paired display
+    # (only worth showing once there's at least one display to choose between).
+    targetable = ([{"device_id": device_id, "name": cfg["name"] + " · this screen"}] + displays) if displays else []
+    return _page("Controller", "controller", cfg, intro + banner + _content_body(cfg, targetable) + push + find)
