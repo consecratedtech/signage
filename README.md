@@ -22,6 +22,26 @@ On the device (Raspberry Pi OS Lite 64-bit, or Debian 13 — no desktop needed).
 A fresh Raspberry Pi OS Lite / minimal Debian image **does not include `git`**,
 so pick one of the two ways below to get the code onto the device.
 
+### Which role? Display vs Controller
+
+You'll pick a role when you install. Every device runs the **same software** — the
+role is just a starting choice, and you can switch it later (switching to
+controller may pull in a few extra packages it needs).
+
+- **Display** — a screen that simply shows whatever content (slides, images, web
+  pages) gets sent to it. This is what most of your devices will be: it's
+  lightweight and runs happily on the smallest hardware. When you're ready to
+  connect it, it shows a short **pairing code** on the screen that you type into
+  the controller.
+- **Controller** — the one device you run everything from. Open its control panel
+  from a phone or computer on the same network. It shows content itself too, but
+  it also does the heavy lifting: turning PowerPoint files into images and pushing
+  content out to all your displays. Pick controller for **exactly one** device on
+  your network.
+
+If you're not sure, choose **display** — and make whichever device you'll manage
+things from the **controller**.
+
 ### Option A — one line, no git needed (recommended)
 
 Download just the installer and let it do the rest. It installs everything it
