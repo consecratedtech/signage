@@ -302,12 +302,61 @@ WantedBy=multi-user.target
 EOF
 ok "${APP}-kiosk.service installed (cage + ${CHROMIUM_PKG}, boots straight to fullscreen)"
 
+# ---- promotion helper (display -> controller installs conversion packages) ---
+# The app runs sandboxed (NoNewPrivileges) and cannot install packages itself.
+# When a device is switched to the controller role it drops a request file in the
+# data dir; this root-owned path unit notices it and installs the controller
+# packages, writing progress back to a status file the UI reads. The package set
+# is fixed here, so the app can only ever trigger this one specific install —
+# never an arbitrary command.
+step "Installing the controller-promotion helper"
+cat > "/usr/local/sbin/${APP}-promote" <<EOF
+#!/usr/bin/env bash
+set -u
+DATA_DIR="${DATA_DIR}"
+STATUS="\${DATA_DIR}/promote.status"
+REQ="\${DATA_DIR}/promote.request"
+status(){ printf '{"state":"%s","detail":"%s","when":"%s"}\n' "\$1" "\$2" "\$(date -Is)" >"\$STATUS"; chown ${APP_USER}:${APP_USER} "\$STATUS" 2>/dev/null || true; }
+status running "installing PowerPoint conversion packages"
+export DEBIAN_FRONTEND=noninteractive
+if apt-get update -qq && apt-get install -y --no-install-recommends ${CONTROLLER_PKGS}; then
+  status done "PowerPoint conversion is ready"
+else
+  status failed "package install failed (the device needs internet to add PowerPoint support)"
+fi
+rm -f "\$REQ"
+EOF
+chmod 0755 "/usr/local/sbin/${APP}-promote"
+
+cat > "/etc/systemd/system/${APP}-promote.service" <<EOF
+[Unit]
+Description=${APP} controller promotion (install PowerPoint conversion packages)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/${APP}-promote
+EOF
+
+cat > "/etc/systemd/system/${APP}-promote.path" <<EOF
+[Unit]
+Description=${APP} controller-promotion watcher
+
+[Path]
+PathExists=${DATA_DIR}/promote.request
+Unit=${APP}-promote.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ok "promotion helper installed (watches for a switch to the controller role)"
+
 systemctl daemon-reload
-systemctl enable "${APP}.service" "${APP}-kiosk.service" >/dev/null 2>&1 || true
+systemctl enable "${APP}.service" "${APP}-kiosk.service" "${APP}-promote.path" >/dev/null 2>&1 || true
 # Use restart (not just enable --now) so re-running the installer to UPDATE
 # actually loads the new code — enable --now is a no-op on an already-running unit.
 systemctl restart "${APP}.service"       >/dev/null 2>&1 || warn "could not start ${APP}.service yet (app code may be incomplete)"
 systemctl restart "${APP}-kiosk.service" >/dev/null 2>&1 || warn "could not start kiosk yet"
+systemctl restart "${APP}-promote.path"  >/dev/null 2>&1 || true
 
 # ---- done -------------------------------------------------------------------
 step "Done"

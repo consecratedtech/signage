@@ -42,6 +42,7 @@ from . import (
     identity,
     library,
     pairing,
+    promote,
     sessions,
     sync,
 )
@@ -227,6 +228,11 @@ def create_app() -> FastAPI:
         config.save_config(cfg)
         _readvertise()
         activity.log(f"Switched this device's role to {role}")
+        # A new controller needs LibreOffice/poppler to convert PowerPoint. The
+        # app is sandboxed, so ask the privileged helper to install them.
+        if role == "controller" and not promote.has_conversion_tools():
+            promote.request_promotion()
+            activity.log("Requested install of PowerPoint conversion packages")
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/name")
@@ -340,6 +346,14 @@ def create_app() -> FastAPI:
         cfg["shuffle"] = bool(shuffle)
         config.save_config(cfg)
         activity.log("Shuffle turned " + ("on" if cfg["shuffle"] else "off"))
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/api/promote")
+    def promote_now():
+        # Manual (re)trigger of the conversion-package install from the UI.
+        if not promote.has_conversion_tools():
+            promote.request_promotion()
+            activity.log("Requested install of PowerPoint conversion packages")
         return RedirectResponse("/", status_code=303)
 
     # --- pairing: display side ----------------------------------------------
@@ -529,6 +543,9 @@ _CSS = """
   }
   .card .hint{color:var(--muted);font-size:.9rem;margin:0 0 14px}
   .card .hint.tail{margin:12px 0 0}
+  .card.note{border-left:4px solid var(--glow)}
+  .card.note.warn{border-left-color:#b42318}
+  .card.note h2{font-size:1.02rem;margin-bottom:6px}
 
   /* forms */
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
@@ -994,8 +1011,28 @@ def _display_home(cfg: dict) -> HTMLResponse:
     return _page("Display", "display", cfg, intro + section + _content_body(cfg))
 
 
+def _promote_banner(conv: dict) -> str:
+    """A status note on the controller home about PowerPoint-conversion support,
+    shown only when it isn't ready yet."""
+    state = conv.get("state")
+    if state == "ready":
+        return ""
+    detail = _esc(conv.get("detail", ""))
+    if state == "installing":
+        return (f'<div class="card note"><h2>Setting up PowerPoint support&hellip;</h2>'
+                f'<p class="hint">{detail} Google Slides, web pages, and images work now.</p></div>')
+    if state == "failed":
+        return (f'<div class="card note warn"><h2>PowerPoint support didn\'t install</h2>'
+                f'<p class="hint">{detail}</p>'
+                f'<form method="post" action="/api/promote"><button class="btn-accent" type="submit">Try again</button></form></div>')
+    return (f'<div class="card note"><h2>PowerPoint support not installed</h2>'
+            f'<p class="hint">{detail} You can still use Google Slides, web pages, and images.</p>'
+            f'<form method="post" action="/api/promote"><button class="btn-accent" type="submit">Install PowerPoint support</button></form></div>')
+
+
 def _control_home(cfg: dict) -> HTMLResponse:
     # Controller's own content + push live ON TOP; paired displays at the BOTTOM.
+    banner = _promote_banner(promote.conversion_state())
     push = f"""
       <div class="card">
         <h2>Push to all displays {_tip('push')}</h2>
@@ -1086,4 +1123,4 @@ def _control_home(cfg: dict) -> HTMLResponse:
       <h1>Controller</h1>
       <p class="lead">Build your playlist, then push it out to your displays.</p>
     """
-    return _page("Controller", "controller", cfg, intro + _content_body(cfg) + push + find)
+    return _page("Controller", "controller", cfg, intro + banner + _content_body(cfg) + push + find)
