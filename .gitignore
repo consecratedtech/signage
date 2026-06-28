@@ -17,5 +17,8 @@ config.json
 .vscode/
 *.swp
 
+# Claude Code (local machine settings; not shared)
+.claude/settings.local.json
+
 HANDOFF.md
 signage HANDOFF.md

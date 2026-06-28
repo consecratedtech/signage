@@ -146,6 +146,9 @@ else
 fi
 # render group lets cage/chromium reach the GPU/DRM device on display nodes
 usermod -aG video,render,input "$APP_USER" 2>/dev/null || true
+# linger gives this (system) user a persistent /run/user/<uid>; cage needs it for
+# XDG_RUNTIME_DIR even though the kiosk runs from systemd, not an interactive login.
+loginctl enable-linger "$APP_USER" 2>/dev/null || true
 
 install -d -m 0755 "$APP_HOME"
 install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR"
@@ -166,12 +169,16 @@ else
   die "no app source found. Run from the cloned repo, or set REPO_URL when piping."
 fi
 cp -a "${SRC_DIR}/." "${APP_HOME}/"
+# Never ship a copied-in dev virtualenv or repo metadata: a stale .venv carries
+# absolute-path shebangs from the source checkout (breaks pip), and .git is dead
+# weight on the appliance. The venv below is always built fresh.
+rm -rf "${APP_HOME}/.venv" "${APP_HOME}/.git"
 chown -R "$APP_USER":"$APP_USER" "$APP_HOME"
 ok "code copied to ${APP_HOME}"
 
 # ---- python venv ------------------------------------------------------------
 step "Setting up Python environment (venv — required on trixie/PEP 668)"
-sudo -u "$APP_USER" python3 -m venv "${APP_HOME}/.venv"
+sudo -u "$APP_USER" python3 -m venv --clear "${APP_HOME}/.venv"
 sudo -u "$APP_USER" "${APP_HOME}/.venv/bin/pip" install --quiet --upgrade pip
 if [ -f "${APP_HOME}/requirements.txt" ]; then
   sudo -u "$APP_USER" "${APP_HOME}/.venv/bin/pip" install --quiet -r "${APP_HOME}/requirements.txt"
@@ -214,13 +221,28 @@ ok "${APP}.service installed (auto-restart, sandboxed, can only write ${DATA_DIR
 cat > "/etc/systemd/system/${APP}-kiosk.service" <<EOF
 [Unit]
 Description=${APP} kiosk display
-After=${APP}.service
+After=${APP}.service systemd-user-sessions.service getty@tty1.service
 Wants=${APP}.service
+# Take the console VT away from the login prompt so the kiosk owns the screen.
+Conflicts=getty@tty1.service
 
 [Service]
 User=${APP_USER}
+# A real login session (PAM) is what gives cage a logind seat on seat0 — that
+# seat is how wlroots becomes DRM master. Claiming tty1 as the controlling
+# terminal is what makes the session "active" so logind hands over the seat.
 PAMName=login
 TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+# cage (wlroots) needs XDG_RUNTIME_DIR; enable-linger (above) creates /run/user/<uid>.
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=XDG_SESSION_TYPE=wayland
 ExecStart=/usr/bin/cage -- ${CHROMIUM_PKG} \\
   --kiosk --noerrdialogs --disable-infobars --incognito \\
   --check-for-update-interval=31536000 \\
