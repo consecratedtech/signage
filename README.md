@@ -17,30 +17,38 @@ controller.
 
 ## Get started
 
-On the device (Raspberry Pi OS Lite 64-bit, or Debian 13):
+On the device (Raspberry Pi OS Lite 64-bit, or Debian 13 — no desktop needed).
 
+A fresh Raspberry Pi OS Lite / minimal Debian image **does not include `git`**,
+so pick one of the two ways below to get the code onto the device.
+
+### Option A — one line, no git needed (recommended)
+
+Download just the installer and let it do the rest. It installs everything it
+needs (git included) and fetches the project itself. Choose the role with
+`--role display` or `--role controller`:
+
+    curl -sSL https://raw.githubusercontent.com/consecratedtech/signage/main/install.sh | sudo bash -s -- --role display
+
+### Option B — install git, then clone
+
+    sudo apt update && sudo apt install -y git
     git clone https://github.com/consecratedtech/signage.git
     cd signage
     sudo ./install.sh
 
-If you see `Permission denied` running the script — which can happen if the
-files were copied from Windows or unpacked from a downloaded zip (either can
-drop the executable bit) — run it through bash instead:
+Run from the cloned folder, the installer asks display/controller
+interactively. If you ever see `Permission denied` on the script — copying from
+Windows or unzipping a download can drop the executable bit — run it through
+bash instead: `sudo bash install.sh`.
 
-    sudo bash install.sh
+### What happens next
 
-or make it executable first:
-
-    chmod +x install.sh && sudo ./install.sh
-
-The installer checks the system, asks whether this device shows content (a
-**display**) or runs the controls (the **controller**), installs what it needs,
-and sets everything to start on boot. It also sets up the boot-to-screen kiosk
-for you — the device powers on straight into full-screen content, with no login
-prompt and no further manual steps. A clean reboot (or a power cut) comes back
-up the same way on its own. Re-check the system any time with:
-
-    sudo ./install.sh --check
+The installer checks the system, installs what it needs, and sets up the
+boot-to-screen kiosk: the device powers on straight into full-screen content,
+with no login prompt and no further manual steps. A reboot (or a power cut)
+comes back up the same way on its own. Re-check the system any time with
+`sudo ./install.sh --check`.
 
 Then open the controller from your phone or computer at `http://<device-ip>:8080`.
 

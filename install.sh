@@ -23,7 +23,9 @@ APP_HOME="/opt/${APP}"
 DATA_DIR="/var/lib/${APP}"          # disk-backed; holds secrets + cached content
 WORK_DIR="${DATA_DIR}/work"         # conversion scratch (NOT /tmp — tmpfs on trixie)
 WEB_PORT="8080"
-REPO_URL="${REPO_URL:-}"            # set when running via curl pipe
+# Where to fetch the code when this script is run on its own (the curl | bash
+# one-liner) instead of from a checked-out repo. Override via env for a fork.
+REPO_URL="${REPO_URL:-https://github.com/consecratedtech/signage.git}"
 ROLE=""
 FORCE=0
 CHECK_ONLY=0
