@@ -163,7 +163,7 @@
         el = document.createElement('video');
         el.muted = true; el.defaultMuted = true; el.setAttribute('muted', '');
         el.playsInline = true; el.setAttribute('playsinline', '');
-        el.preload = 'auto';
+        el.preload = 'none';          // don't buffer every video at once; load on play
         el.src = item.src;
       } else {
         el = document.createElement('iframe');
@@ -218,7 +218,10 @@
     function clearTimers() {
       if (cycleTimer) { clearTimeout(cycleTimer); cycleTimer = null; }
       clearPendingSlide();
-      layers.forEach(e => { const v = e.el.querySelector('video'); if (v) { try { v.pause(); } catch (_) {} } });
+      layers.forEach(e => {
+        const v = e.el.querySelector('video');
+        if (v) { v.onended = null; v.onerror = null; try { v.pause(); } catch (_) {} }
+      });
     }
     function revealLayer(idx) {
       layers.forEach((e, n) => e.el.classList.toggle('active', n === idx));
@@ -309,14 +312,24 @@
       try { v.currentTime = 0; } catch (e) {}
       const p = v.play();
       if (p && p.catch) p.catch(() => {});         // autoplay may reject; muted should allow it
-      if (single) return;                          // a lone video just loops
+      if (single) {
+        v.onerror = () => { idle.style.display = 'flex'; };  // a broken lone video → idle, not black
+        return;
+      }
       let done = false;
-      const finish = () => { if (done) return; done = true; v.onended = null; advance(); };
+      const finish = () => { if (done) return; done = true; v.onended = null; v.onerror = null; advance(); };
       v.onended = finish;
-      // advance when the video ends; a long fail-safe (or the user's cap) covers
-      // a stream that never fires 'ended'.
-      const capMs = (item.seconds && item.seconds > 0 ? item.seconds : 1800) * 1000;
+      v.onerror = () => setTimeout(finish, 1000);  // a broken/unreachable video is skipped promptly
+      // Advance when the video ends. Fail-safe: the user's cap if set, else the
+      // real duration once known, else a sane bound — never 30 minutes of black.
+      const fallback = () => (isFinite(v.duration) && v.duration > 0) ? (v.duration + 5) * 1000 : 600000;
+      const capMs = (item.seconds && item.seconds > 0) ? item.seconds * 1000 : fallback();
       cycleTimer = setTimeout(finish, capMs);
+      v.onloadedmetadata = () => {
+        if (done || (item.seconds && item.seconds > 0)) return;
+        clearTimeout(cycleTimer);
+        cycleTimer = setTimeout(finish, fallback());  // tighten to the real length
+      };
     }
 
     // Show the address for ~1 minute after boot, then hand the screen to content.

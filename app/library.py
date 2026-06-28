@@ -117,7 +117,7 @@ def _count_slides(url: str) -> int:
     try:
         fetch = url.replace("/embed", "/pub", 1)
         req = urllib.request.Request(fetch, headers={"User-Agent": _SLIDES_UA})
-        with urllib.request.urlopen(req, timeout=12) as resp:
+        with urllib.request.urlopen(req, timeout=6) as resp:
             html = resp.read(8_000_000).decode("utf-8", "replace")
         # Each slide is an array ["gID_0_N",<index>,"title",...] in the model.
         n = len(re.findall(r'\["g[0-9a-z]+_\d+_\d+",\d+,"', html))
@@ -172,6 +172,18 @@ def add_video(filename: str, data: bytes, seconds: int = 0) -> dict:
     })
 
 
+def add_video_path(filename: str, src_path) -> dict:
+    """Register an already-on-disk video as one item, moving it into assets. Used
+    when a large upload was streamed to a temp file (never buffered whole in RAM)."""
+    ASSETS.mkdir(parents=True, exist_ok=True)
+    asset_id = secrets.token_hex(8) + (Path(filename).suffix.lower() or ".mp4")
+    shutil.move(str(src_path), str(ASSETS / asset_id))
+    return _append({
+        "id": secrets.token_hex(4), "type": "video", "ref": asset_id,
+        "seconds": 0, "name": filename,
+    })
+
+
 def measure_slides(item_id: str) -> dict:
     """Network step, run right after adding a URL: for a Google Slides item, size
     its on-screen time to the whole deck — slide count x the per-slide delay from
@@ -221,6 +233,8 @@ def add_pptx(filename: str, data: bytes, seconds: int = DEFAULT_IMAGE_SECONDS) -
             asset_id = secrets.token_hex(8) + ".png"
             shutil.copyfile(png, ASSETS / asset_id)
             refs.append(asset_id)
+        if not refs:
+            raise RuntimeError("That PowerPoint produced no slides.")
         return _append({
             "id": secrets.token_hex(4), "type": "slideshow", "refs": refs,
             "seconds": int(seconds), "name": filename, "slides": len(refs),

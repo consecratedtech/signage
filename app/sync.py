@@ -31,6 +31,34 @@ def post_json(url: str, obj: dict, timeout: int = 10) -> dict:
         return json.loads(resp.read().decode())
 
 
+ASSET_TIMEOUT = 20                       # seconds before a stalled asset fetch gives up
+MAX_ASSET_BYTES = 600 * 1024 * 1024      # 600 MB cap per asset (a wedged/huge file can't hang us)
+
+
+def _download(url: str, dest: Path) -> None:
+    """Fetch an asset to dest with a timeout and a size cap, streaming in chunks so
+    a stalled or oversized push can never block the receive path forever. Raises on
+    failure (the caller skips that one item and keeps the rest)."""
+    req = urllib.request.Request(url, headers={"User-Agent": "signage"})
+    try:
+        with urllib.request.urlopen(req, timeout=ASSET_TIMEOUT) as resp, open(dest, "wb") as f:
+            total = 0
+            while True:
+                chunk = resp.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_ASSET_BYTES:
+                    raise ValueError("asset exceeds size cap")
+                f.write(chunk)
+    except Exception:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        raise
+
+
 # --- controller side --------------------------------------------------------
 
 def build_manifest(items: list, from_name: str, base_url: str) -> dict:
@@ -99,7 +127,7 @@ def receive(manifest: dict, signature: str, controller_site_key: str) -> bool:
             for asset_url in it.get("asset_urls", []):
                 name = hashlib.sha256(asset_url.encode()).hexdigest()[:16] + ".img"
                 try:
-                    urllib.request.urlretrieve(asset_url, str(RECV_ASSETS / name))
+                    _download(asset_url, RECV_ASSETS / name)
                 except Exception:
                     continue  # skip a slide we couldn't fetch; keep the rest
                 srcs.append(f"/recv-asset/{name}")
@@ -112,7 +140,7 @@ def receive(manifest: dict, signature: str, controller_site_key: str) -> bool:
                 ext = Path(it["asset_url"].split("?")[0]).suffix or ".mp4"
                 name = hashlib.sha256(it["asset_url"].encode()).hexdigest()[:16] + ext
                 try:
-                    urllib.request.urlretrieve(it["asset_url"], str(RECV_ASSETS / name))
+                    _download(it["asset_url"], RECV_ASSETS / name)
                 except Exception:
                     continue  # skip a video we couldn't fetch; keep the rest
                 items.append({"type": "video", "src": f"/recv-asset/{name}", "seconds": it["seconds"]})

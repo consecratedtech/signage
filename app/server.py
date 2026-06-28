@@ -18,6 +18,7 @@ This service listens on the LAN. Login still needs to gate it before release.
 
 import html as _htmllib
 import io
+import secrets
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,6 +32,7 @@ from fastapi.responses import (
     Response,
 )
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from . import (
     activity,
@@ -51,6 +53,7 @@ from . import __version__ as APP_VERSION
 _SETUP_HTML = (Path(__file__).parent / "pages" / "setup.html").read_text(encoding="utf-8")
 _SCREEN_HTML = (Path(__file__).parent / "pages" / "screen.html").read_text(encoding="utf-8")
 _STATIC_DIR = Path(__file__).parent / "static"  # locally-vendored fonts, etc.
+MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB ceiling for any single upload
 
 
 def create_app() -> FastAPI:
@@ -327,22 +330,45 @@ def create_app() -> FastAPI:
 
     @app.post("/api/content/upload")
     async def add_upload(file: UploadFile, seconds: int = Form(library.DEFAULT_IMAGE_SECONDS)):
-        data = await file.read()
         name = file.filename or "upload"
+        low = name.lower()
+        # Stream the upload to a temp file in chunks so a large video is never held
+        # whole in memory (a small controller would run out of RAM). Conversion +
+        # disk work runs off the event loop.
+        config.WORK.mkdir(parents=True, exist_ok=True)
+        tmp = config.WORK / ("upload_" + secrets.token_hex(8) + (Path(name).suffix.lower() or ".bin"))
         try:
-            low = name.lower()
+            total = 0
+            with open(tmp, "wb") as out:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_UPLOAD_BYTES:
+                        raise ValueError("file too large")
+                    out.write(chunk)
             if low.endswith((".pptx", ".ppt")):
-                item = library.add_pptx(name, data, seconds)
+                item = await run_in_threadpool(library.add_pptx, name, tmp.read_bytes(), seconds)
                 activity.log(f"Added a PowerPoint ({item.get('slides', 0)} slide(s))", name)
             elif low.endswith(library.VIDEO_EXTS):
-                library.add_video(name, data, 0)  # 0 = play the whole video
+                await run_in_threadpool(library.add_video_path, name, str(tmp))
+                tmp = None  # moved into assets; nothing to clean up
                 activity.log("Added a video to the playlist", name)
             else:
-                library.add_image(name, data, seconds)
+                await run_in_threadpool(library.add_image, name, tmp.read_bytes(), seconds)
                 activity.log("Added an image to the playlist", name)
+        except ValueError:
+            return JSONResponse({"error": "That file is too large (1 GB max)."}, status_code=413)
         except RuntimeError as exc:
             activity.log("An upload could not be processed", str(exc))
             return JSONResponse({"error": str(exc)}, status_code=400)
+        finally:
+            if tmp is not None:
+                try:
+                    Path(tmp).unlink()
+                except OSError:
+                    pass
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/content/remove")
@@ -411,7 +437,11 @@ def create_app() -> FastAPI:
         if not controller:
             return JSONResponse({"error": "not paired"}, status_code=403)
         body = await request.json()
-        ok = sync.receive(body.get("manifest"), body.get("signature"), controller["site_key"])
+        # receive() verifies the signature then downloads assets; run it off the
+        # event loop so a slow or large push can never block the kiosk web server.
+        ok = await run_in_threadpool(
+            sync.receive, body.get("manifest"), body.get("signature"), controller["site_key"]
+        )
         if not ok:
             return JSONResponse({"error": "rejected"}, status_code=403)
         return {"ok": True}
@@ -1074,8 +1104,8 @@ def _content_body(cfg: dict) -> str:
         </form>
         <p class="hint tail">A Google Slides deck plays all the way through
           automatically: it reads the slide count and the per-slide time from your
-          &ldquo;Publish to web&rdquo; link, then moves on to the next item. Turn on
-          auto-advance when you publish so the link carries the timing.</p>
+          &ldquo;Publish to web&rdquo; link (the device needs internet the moment you
+          add it). Turn on auto-advance when you publish so the link carries the timing.</p>
       </div>
 
       <div class="card">

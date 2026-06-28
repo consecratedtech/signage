@@ -330,3 +330,14 @@ def test_set_seconds_nonvideo_still_has_floor():
     a = library.add_url("a.com", seconds=10)
     library.set_seconds(a["id"], 0)
     assert library.list_items()[0]["seconds"] == library.MIN_SECONDS
+
+
+def test_add_video_path_moves_file_into_assets(tmp_path):
+    src = tmp_path / "clip.webm"
+    src.write_bytes(b"\x1aE\xdf\xa3video-bytes")
+    item = library.add_video_path("MyClip.WEBM", str(src))
+    assert item["type"] == "video"
+    assert item["ref"].endswith(".webm")
+    assert item["seconds"] == 0
+    assert not src.exists()  # moved, not copied (no RAM buffering of large files)
+    assert library.asset_path(item["ref"]).read_bytes().startswith(b"\x1aE\xdf\xa3")
