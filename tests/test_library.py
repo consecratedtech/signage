@@ -196,3 +196,66 @@ def test_reorder_empty_order_keeps_all_at_end():
     b = library.add_url("b.com")
     library.reorder([])
     assert [i["id"] for i in library.list_items()] == [a["id"], b["id"]]
+
+
+# --- move (up/down one slot) ------------------------------------------------
+
+def test_move_down_swaps_with_next():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    c = library.add_url("c.com")
+    library.move(a["id"], "down")
+    assert [i["id"] for i in library.list_items()] == [b["id"], a["id"], c["id"]]
+
+
+def test_move_up_swaps_with_previous():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    library.move(b["id"], "up")
+    assert [i["id"] for i in library.list_items()] == [b["id"], a["id"]]
+
+
+def test_move_up_at_top_is_noop():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    library.move(a["id"], "up")
+    assert [i["id"] for i in library.list_items()] == [a["id"], b["id"]]
+
+
+def test_move_down_at_bottom_is_noop():
+    a = library.add_url("a.com")
+    b = library.add_url("b.com")
+    library.move(b["id"], "down")
+    assert [i["id"] for i in library.list_items()] == [a["id"], b["id"]]
+
+
+def test_move_unknown_id_is_noop():
+    a = library.add_url("a.com")
+    library.move("ffffffff", "down")
+    assert [i["id"] for i in library.list_items()] == [a["id"]]
+
+
+# --- set_seconds ------------------------------------------------------------
+
+def test_set_seconds_updates_in_place():
+    a = library.add_url("a.com", seconds=10)
+    library.set_seconds(a["id"], 45)
+    assert library.list_items()[0]["seconds"] == 45
+
+
+def test_set_seconds_clamps_to_minimum():
+    a = library.add_url("a.com", seconds=10)
+    library.set_seconds(a["id"], 1)
+    assert library.list_items()[0]["seconds"] == library.MIN_SECONDS
+
+
+def test_set_seconds_coerces_to_int():
+    a = library.add_url("a.com", seconds=10)
+    library.set_seconds(a["id"], "30")
+    assert library.list_items()[0]["seconds"] == 30
+
+
+def test_set_seconds_unknown_id_is_noop():
+    a = library.add_url("a.com", seconds=12)
+    library.set_seconds("ffffffff", 99)
+    assert library.list_items()[0]["seconds"] == 12
