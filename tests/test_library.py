@@ -74,8 +74,16 @@ def test_add_url_slides_pub_to_embed_with_autoplay():
     assert "/embed" in item["ref"]
     assert "/pub" not in item["ref"]
     assert "start=true" in item["ref"]
-    assert "loop=true" in item["ref"]
+    # loop is forced off so the deck holds its last slide instead of cycling
+    assert "loop=false" in item["ref"]
+    assert "loop=true" not in item["ref"]
     assert "delayms=10000" in item["ref"]
+
+
+def test_add_url_slides_forces_loop_false_when_user_set_loop_true():
+    item = library.add_url(SLIDES_PUB + "?start=true&loop=true&delayms=15000")
+    assert "loop=false" in item["ref"]
+    assert "loop=true" not in item["ref"]
 
 
 def test_add_url_slides_default_name_is_google_slides():

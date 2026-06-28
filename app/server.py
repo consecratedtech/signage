@@ -267,8 +267,13 @@ def create_app() -> FastAPI:
         else:
             items = []
             for item in library.list_items():
-                src = item["ref"] if item["type"] == "url" else f"/asset/{item['ref']}"
-                items.append({"type": item["type"], "src": src, "seconds": item["seconds"]})
+                if item["type"] == "url":
+                    items.append({"type": "url", "src": item["ref"], "seconds": item["seconds"]})
+                elif item["type"] == "slideshow":
+                    items.append({"type": "slideshow", "seconds": item["seconds"],
+                                  "srcs": [f"/asset/{r}" for r in item.get("refs", [])]})
+                else:
+                    items.append({"type": "image", "src": f"/asset/{item['ref']}", "seconds": item["seconds"]})
         return {
             "items": items,
             "pairing_code": pairing.current_code(),
@@ -323,8 +328,8 @@ def create_app() -> FastAPI:
         name = file.filename or "upload"
         try:
             if name.lower().endswith((".pptx", ".ppt")):
-                added = library.add_pptx(name, data, seconds)
-                activity.log(f"Added a PowerPoint ({len(added)} slide(s))", name)
+                item = library.add_pptx(name, data, seconds)
+                activity.log(f"Added a PowerPoint ({item.get('slides', 0)} slide(s))", name)
             else:
                 library.add_image(name, data, seconds)
                 activity.log("Added an image to the playlist", name)
@@ -588,6 +593,7 @@ _CSS = """
   .item .name{flex:1;min-width:0;font-weight:500;display:flex;flex-direction:column;justify-content:center}
   .item .name .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .slidenote{font-family:"Space Mono",monospace;font-size:.7rem;color:var(--muted);margin-top:2px}
+  .secs.auto{font-family:"Space Mono",monospace;font-size:.72rem;color:var(--muted);align-self:center;padding:8px 10px}
   .item .meta{font-family:"Space Mono",monospace;font-size:.78rem;color:var(--muted)}
   .item form{margin:0}
   .item .secs{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--muted)}
@@ -985,11 +991,25 @@ def _content_body(cfg: dict) -> str:
         for n, it in enumerate(items):
             up_dis = " disabled" if n == 0 else ""
             dn_dis = " disabled" if n == last else ""
-            slides = it.get("slides")
-            note = (f'<span class="slidenote">&#9654; plays all {slides} slides &middot; '
-                    f'{it.get("per_slide", "?")}s each (from the link)</span>' if slides else "")
-            secs_title = ("Total seconds for the whole deck (auto from the link)"
-                          if slides else "Seconds on screen")
+            is_gslides = it["type"] == "url" and it.get("slides")
+            is_show = it["type"] == "slideshow"
+            secs_form = f"""
+                <form class="secs" method="post" action="/api/content/seconds">
+                  <input type="hidden" name="item_id" value="{it['id']}">
+                  <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="{it['seconds']}"
+                         title="{{title}}" aria-label="{{title}}">
+                  <button class="btn-ghost set" title="Save time">Set</button>
+                </form>"""
+            if is_gslides:
+                note = (f'<span class="slidenote">&#9654; plays all {it["slides"]} slides &middot; '
+                        f'{it.get("per_slide", "?")}s each (from the link)</span>')
+                secs_html = '<span class="secs auto" title="Timed automatically from the deck">auto</span>'
+            elif is_show:
+                note = f'<span class="slidenote">&#9654; {it["slides"]}-slide show &middot; {it["seconds"]}s each</span>'
+                secs_html = secs_form.replace("{title}", "Seconds per slide")
+            else:
+                note = ""
+                secs_html = secs_form.replace("{title}", "Seconds on screen")
             rows += f"""
               <div class="item">
                 <span class="ord">
@@ -1005,12 +1025,7 @@ def _content_body(cfg: dict) -> str:
                   </form>
                 </span>
                 <span class="name"><span class="nm">{_esc(it['name'])}</span>{note}</span>
-                <form class="secs" method="post" action="/api/content/seconds">
-                  <input type="hidden" name="item_id" value="{it['id']}">
-                  <input name="seconds" type="number" min="{library.MIN_SECONDS}"
-                         value="{it['seconds']}" title="{secs_title}" aria-label="{secs_title}">
-                  <button class="btn-ghost set" title="Save time">Set</button>
-                </form>
+                {secs_html}
                 <form method="post" action="/api/content/remove">
                   <input type="hidden" name="item_id" value="{it['id']}">
                   <button class="x" title="Remove">&times;</button>
@@ -1048,10 +1063,11 @@ def _content_body(cfg: dict) -> str:
 
       <div class="card">
         <h2>Upload an image or PowerPoint</h2>
-        <p class="hint">PowerPoint is converted to slides automatically.</p>
+        <p class="hint">A PowerPoint becomes <b>one</b> slideshow that plays all its
+          slides in order. The seconds box is how long each image or slide stays up.</p>
         <form method="post" action="/api/content/upload" enctype="multipart/form-data" class="row">
           <input name="file" type="file" accept="image/*,.pptx,.ppt" required>
-          <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="10" title="seconds per image">
+          <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="10" title="seconds per image or slide">
           <button class="btn-primary" type="submit">Upload</button>
         </form>
       </div>

@@ -81,45 +81,52 @@
     const idle = document.getElementById('idle');
     const pair = document.getElementById('pair');
     const pairCode = document.getElementById('pairCode');
-    let items = [];      // playlist items, in playlist order
-    let order = [];      // play sequence (indices into items): shuffled or 0..n-1
-    let pos = 0;         // position within `order`
-    let timer = null;
-    let signature = '';
+
+    let items = [];        // playlist items, in playlist order
+    let order = [];        // play sequence (indices into items): shuffled or 0..n-1
+    let pos = 0;           // position within `order`
+    let signature = '';    // detects when the content/shuffle actually changed
     let shuffle = false;
-    let lastUrl = '';    // current connect URL (so the QR refreshes if the IP changes)
-    let bootDone = false; // true after the startup address splash has elapsed
-    // Cache of mounted layers, one per item, keyed by "index|src". Built once and
-    // reused so iframes are not needlessly reloaded; crossfading swaps which is
-    // visible. A Google Slides layer is the exception — see activate().
-    let layers = [];
+    let lastUrl = '';      // current connect URL (so the QR refreshes if the IP changes)
+    let bootDone = false;  // true after the startup address splash has elapsed
+    let layers = [];       // mounted layer per item (built once, reused)
+
+    let cycleTimer = null;   // advances items, and slides WITHIN a pptx slideshow
+    let pendingSlide = null; // {iframe, timer}: a Google Slides reload still loading
+
+    function dur(item) { return Math.max(3, item.seconds || 10) * 1000; }
+
+    function embedSrc(u) {
+      // Google Slides '/pub' links send X-Frame-Options: SAMEORIGIN and refuse to
+      // load in an iframe; '/embed' is the frameable form. Force loop=false so the
+      // deck holds on its LAST slide rather than cycling back to slide 1.
+      u = u || '';
+      if (!/docs\.google\.com\/presentation/.test(u)) return u;
+      return u.replace('/pub', '/embed').replace(/loop=true/, 'loop=false');
+    }
+    function isSlides(u) { return /docs\.google\.com\/presentation/.test(u || ''); }
 
     async function loadData() {
       try {
         const r = await fetch('/api/screen-data', { cache: 'no-store' });
         const data = await r.json();
 
-        // Where to reach this device (idle screen + pairing overlay), plus a QR
-        // so it can be opened by scanning instead of typing an IP.
         if (data.connect_url) {
           document.getElementById('connectUrl').textContent = data.connect_url;
           document.getElementById('pairUrl').textContent = data.connect_url;
           document.getElementById('bootUrl').textContent = data.connect_url;
           if (data.connect_url !== lastUrl) {
             lastUrl = data.connect_url;
-            // the query is only a cache-buster; the server always encodes its own address
             const qsrc = '/qr.png?u=' + encodeURIComponent(data.connect_url);
             const qi = document.getElementById('qrIdle'), qp = document.getElementById('qrPair'), qb = document.getElementById('qrBoot');
             qi.onload = () => { qi.style.display = 'block'; document.getElementById('qrIdleCap').style.display = 'block'; };
             qp.onload = () => { qp.style.display = 'block'; };
             qb.onload = () => { qb.style.display = 'block'; document.getElementById('qrBootCap').style.display = 'block'; };
-            // if the QR can't be fetched, allow a retry on the next poll
-            qi.onerror = qp.onerror = qb.onerror = () => { lastUrl = ''; };
+            qi.onerror = qp.onerror = qb.onerror = () => { lastUrl = ''; };  // retry next poll
             qi.src = qsrc; qp.src = qsrc; qb.src = qsrc;
           }
         }
 
-        // pairing code overlay (shown over whatever is playing)
         if (data.pairing_code) {
           pairCode.textContent = data.pairing_code;
           pair.style.display = 'flex';
@@ -127,7 +134,6 @@
           pair.style.display = 'none';
         }
 
-        // Rebuild only when the content OR the shuffle setting actually changes.
         const sig = JSON.stringify({ i: data.items || [], s: !!data.shuffle });
         if (sig !== signature) {
           signature = sig;
@@ -136,54 +142,48 @@
           pos = 0;
           rebuild();
           buildOrder();
-          show();
+          playCurrent();
         }
       } catch (e) { /* keep showing what we have if a fetch fails */ }
     }
 
-    function embedSrc(u) {
-      // Google Slides '/pub' links send X-Frame-Options: SAMEORIGIN and refuse
-      // to load in an iframe; '/embed' is the frameable published form.
-      u = u || '';
-      return /docs\.google\.com\/presentation/.test(u) ? u.replace('/pub', '/embed') : u;
-    }
-
-    function isSlides(src) {
-      return /docs\.google\.com\/presentation/.test(src || '');
-    }
-
-    // Build the DOM layer (an absolutely-positioned wrapper holding the <img> or
-    // <iframe>) for one playlist item. Called once per item by rebuild().
+    // Build the DOM layer for one item: an <img> (image / pptx slideshow) or an
+    // <iframe> (web page / Google Slides).
     function buildLayer(item) {
       const layer = document.createElement('div');
       layer.className = 'layer';
-      const src = embedSrc(item.src);
       let el;
       if (item.type === 'image') {
-        el = Object.assign(document.createElement('img'), { src });
+        el = document.createElement('img');
+        el.src = embedSrc(item.src);
+      } else if (item.type === 'slideshow') {
+        el = document.createElement('img');   // src is set per-slide while playing
       } else {
-        el = Object.assign(document.createElement('iframe'), { src, allow: 'autoplay; fullscreen' });
-        if (isSlides(src)) el.className = 'slides';  // tag so CSS clips the branding bar
+        el = document.createElement('iframe');
+        el.src = embedSrc(item.src);
+        el.allow = 'autoplay; fullscreen';
+        if (isSlides(item.src)) el.className = 'slides';
       }
       layer.appendChild(el);
       return layer;
     }
 
-    // Reconcile the mounted layers with the current `items`: reuse a layer when
-    // the same item is still at the same slot (so its iframe is not reloaded),
-    // build new ones for new content, drop ones for content that is gone.
+    // Reconcile mounted layers with the current items, reusing a layer when the
+    // same content is still at the same slot so iframes are not needlessly reloaded.
     function rebuild() {
       const next = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
-        const src = embedSrc(item.src);
-        const key = i + '|' + (item.src || '');
+        const content = item.src || (item.srcs || []).join(',');
+        const key = i + '|' + item.type + '|' + content;
         const prev = layers[i];
         let entry;
         if (prev && prev.key === key) {
           entry = prev;
+          entry.item = item;            // refresh (e.g. an edited per-slide time)
         } else {
-          entry = { key, item, src, slides: isSlides(src), el: buildLayer(item) };
+          const src = (item.type === 'url' || item.type === 'image') ? embedSrc(item.src) : '';
+          entry = { key, item, src, slides: item.type === 'url' && isSlides(item.src || ''), el: buildLayer(item) };
           stage.appendChild(entry.el);
         }
         next.push(entry);
@@ -194,8 +194,7 @@
       layers = next;
     }
 
-    // Decide the order items play in. Default: top-to-bottom, exactly as listed
-    // on the controller (no surprises). Shuffle is opt-in from the panel.
+    // Default order is top-to-bottom, exactly as listed. Shuffle is opt-in.
     function buildOrder() {
       order = items.map((_, i) => i);
       if (shuffle) {
@@ -206,68 +205,94 @@
       }
     }
 
-    // Bring item `idx` to the front. For a Google Slides deck we reload it first
-    // so it always restarts at slide 1 and plays through in order — otherwise a
-    // hidden deck keeps auto-advancing and reappears on a random slide. We hold
-    // the previous layer up until the deck has loaded, so there is no black gap.
-    // An in-flight Slides reveal (its reload onload + fail-safe timer). Tracked so
-    // a re-entrant show()/activate() — e.g. a 10s poll landing during the deck's
-    // load window — can cancel it instead of leaving a second rotation loop
-    // running (double-speed advance) or revealing a now-stale slide.
-    let pendingSlide = null;
     function clearPendingSlide() {
-      if (pendingSlide) {
-        clearTimeout(pendingSlide.timer);
-        pendingSlide.iframe.onload = null;
-        pendingSlide = null;
-      }
+      if (pendingSlide) { clearTimeout(pendingSlide.timer); pendingSlide.iframe.onload = null; pendingSlide = null; }
+    }
+    function clearTimers() {
+      if (cycleTimer) { clearTimeout(cycleTimer); cycleTimer = null; }
+      clearPendingSlide();
+    }
+    function revealLayer(idx) {
+      layers.forEach((e, n) => e.el.classList.toggle('active', n === idx));
+    }
+    function advance() {
+      pos = (pos + 1) % order.length;
+      playCurrent();
     }
 
-    function activate(idx, after) {
-      clearPendingSlide();            // cancel any Slides reveal still in flight
-      const entry = layers[idx];
-      const reveal = () => {
-        layers.forEach((e, n) => e.el.classList.toggle('active', n === idx));
-        if (after) after();
-      };
-      if (entry && entry.slides) {
-        const iframe = entry.el.querySelector('iframe');
-        let done = false;
-        const go = () => { if (done) return; done = true; clearPendingSlide(); reveal(); };
-        iframe.onload = go;
-        iframe.src = entry.src;       // reassigning src reloads the deck → slide 1
-        pendingSlide = { iframe, timer: setTimeout(go, 3000) };  // fail-safe if onload never fires
-      } else {
-        reveal();
-      }
-    }
-
-    function show() {
-      if (!bootDone) return;          // the startup address splash owns the screen first
-      if (timer) clearTimeout(timer);
-      clearPendingSlide();            // no stale Slides reveal across a re-render
-      if (!items.length) {            // nothing to play → show the idle/setup screen
+    // Show whatever is current. A pptx slideshow plays through all its slides and
+    // a Google Slides deck plays through its whole deck (restarted at slide 1)
+    // before we move on — never cut off mid-deck.
+    function playCurrent() {
+      clearTimers();
+      if (!bootDone) return;                       // boot splash owns the screen first
+      if (!items.length) {                         // nothing to play → idle/setup screen
         idle.style.display = 'flex';
         layers.forEach(e => e.el.classList.remove('active'));
         return;
       }
       idle.style.display = 'none';
       const idx = order[pos % order.length];
-      activate(idx, () => {
-        // A single self-advancing deck loops on its own; only run the rotation
-        // timer when there is more than one item to rotate between.
-        if (items.length > 1) {
-          const secs = Math.max(3, items[idx].seconds || 10);
-          timer = setTimeout(() => { pos = (pos + 1) % order.length; show(); }, secs * 1000);
-        }
-      });
+      const item = items[idx];
+      const single = items.length === 1;
+      if (item.type === 'slideshow') {
+        playSlideshow(idx, single);
+      } else if (layers[idx] && layers[idx].slides) {
+        playSlidesDeck(idx, single);
+      } else {
+        revealLayer(idx);
+        if (!single) cycleTimer = setTimeout(advance, dur(item));
+      }
+    }
+
+    // A pptx: one item, many image slides. Step through them, then move on (or
+    // loop the show if it's the only thing on the playlist).
+    function playSlideshow(idx, single) {
+      const entry = layers[idx];
+      const item = entry.item;
+      const img = entry.el.querySelector('img');
+      const srcs = item.srcs || [];
+      if (!srcs.length) { if (!single) advance(); return; }
+      let s = 0;
+      const step = () => {
+        img.src = srcs[s];
+        revealLayer(idx);
+        cycleTimer = setTimeout(() => {
+          s += 1;
+          if (s >= srcs.length) { if (single) { s = 0; step(); } else advance(); }
+          else step();
+        }, dur(item));
+      };
+      step();
+    }
+
+    // A Google Slides deck: reload to slide 1 (it auto-advances itself), hold for
+    // the whole-deck duration, then move on. loop=false makes it stop on the last
+    // slide; we keep the previous layer up until the deck has loaded (no black gap).
+    function playSlidesDeck(idx, single) {
+      const entry = layers[idx];
+      const iframe = entry.el.querySelector('iframe');
+      let done = false;
+      const go = () => {
+        if (done) return;
+        done = true;
+        clearPendingSlide();
+        revealLayer(idx);
+        cycleTimer = setTimeout(() => {
+          if (single) playSlidesDeck(idx, true);   // replay the deck from slide 1
+          else advance();
+        }, dur(entry.item));
+      };
+      iframe.onload = go;
+      iframe.src = entry.src;                       // reassigning src restarts at slide 1
+      pendingSlide = { iframe, timer: setTimeout(go, 3500) };  // fail-safe if onload never fires
     }
 
     // Show the address for ~1 minute after boot, then hand the screen to content.
     setTimeout(() => {
       bootDone = true;
       document.getElementById('boot').style.display = 'none';
-      show();
+      playCurrent();
     }, 60000);
 
     loadData();

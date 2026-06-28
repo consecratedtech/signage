@@ -56,16 +56,21 @@ def _is_google_slides(url: str) -> bool:
 
 
 def _slides_autoplay(url: str) -> str:
-    """Normalize a 'Publish to web' Slides link for embedding: use the /embed
-    form (the /pub full-page view sends X-Frame-Options: SAMEORIGIN and will not
-    render inside the screen's iframe), and add the params that make it
-    auto-advance and loop on its own."""
+    """Normalize a 'Publish to web' Slides link for embedding: use the /embed form
+    (the /pub full-page view sends X-Frame-Options: SAMEORIGIN and won't render in
+    an iframe), ensure it auto-advances, and force loop=false so the deck holds on
+    its LAST slide at the end instead of cycling back to slide 1 — the screen
+    restarts it at slide 1 each cycle and times it to show every slide."""
     if not _is_google_slides(url):
         return url
     url = url.replace("/pub", "/embed", 1)
     if "start=" not in url:
         sep = "&" if "?" in url else "?"
-        url = url + sep + "start=true&loop=true&delayms=10000"
+        url = url + sep + "start=true&delayms=10000"
+    if "loop=" in url:
+        url = re.sub(r"loop=(?:true|false|1|0)", "loop=false", url)
+    else:
+        url = url + ("&" if "?" in url else "?") + "loop=false"
     return url
 
 
@@ -133,7 +138,10 @@ def measure_slides(item_id: str) -> dict:
             if n and per:
                 it["slides"] = n
                 it["per_slide"] = per
-                it["seconds"] = n * per
+                # Size to show EVERY slide: deck time + a buffer for the initial
+                # load and Google's own timing drift. With loop=false the buffer
+                # just lingers on the last slide, so it's never cut off.
+                it["seconds"] = (n + 1) * per + 15
                 _save(items)
             return it
     return {}
@@ -149,7 +157,10 @@ def add_image(filename: str, data: bytes, seconds: int = DEFAULT_IMAGE_SECONDS) 
     })
 
 
-def add_pptx(filename: str, data: bytes, seconds: int = DEFAULT_IMAGE_SECONDS) -> list:
+def add_pptx(filename: str, data: bytes, seconds: int = DEFAULT_IMAGE_SECONDS) -> dict:
+    """Convert a PowerPoint to images and add it as ONE slideshow item that plays
+    through all its slides in order (each for `seconds`) before the next playlist
+    item — not one row per slide."""
     config.WORK.mkdir(parents=True, exist_ok=True)
     ASSETS.mkdir(parents=True, exist_ok=True)
     work_pptx = config.WORK / (secrets.token_hex(6) + ".pptx")
@@ -157,15 +168,15 @@ def add_pptx(filename: str, data: bytes, seconds: int = DEFAULT_IMAGE_SECONDS) -
     slides_dir = config.WORK / ("slides_" + secrets.token_hex(6))
     try:
         pngs = convert.pptx_to_pngs(work_pptx, slides_dir)
-        added = []
-        for i, png in enumerate(pngs, 1):
+        refs = []
+        for png in pngs:
             asset_id = secrets.token_hex(8) + ".png"
             shutil.copyfile(png, ASSETS / asset_id)
-            added.append(_append({
-                "id": secrets.token_hex(4), "type": "image", "ref": asset_id,
-                "seconds": int(seconds), "name": f"{filename} — slide {i}",
-            }))
-        return added
+            refs.append(asset_id)
+        return _append({
+            "id": secrets.token_hex(4), "type": "slideshow", "refs": refs,
+            "seconds": int(seconds), "name": filename, "slides": len(refs),
+        })
     finally:
         shutil.rmtree(slides_dir, ignore_errors=True)
         work_pptx.unlink(missing_ok=True)

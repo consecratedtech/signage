@@ -41,6 +41,11 @@ def build_manifest(items: list, from_name: str, base_url: str) -> dict:
     for it in items:
         if it["type"] == "url":
             out.append({"type": "url", "seconds": it["seconds"], "url": it["ref"]})
+        elif it["type"] == "slideshow":
+            out.append({
+                "type": "slideshow", "seconds": it["seconds"],
+                "asset_urls": [f"{base_url}/asset/{r}" for r in it.get("refs", [])],
+            })
         else:
             out.append({
                 "type": "image", "seconds": it["seconds"],
@@ -83,6 +88,17 @@ def receive(manifest: dict, signature: str, controller_site_key: str) -> bool:
     for it in manifest.get("items", []):
         if it.get("type") == "url":
             items.append({"type": "url", "src": it["url"], "seconds": it["seconds"]})
+        elif it.get("type") == "slideshow":
+            srcs = []
+            for asset_url in it.get("asset_urls", []):
+                name = hashlib.sha256(asset_url.encode()).hexdigest()[:16] + ".img"
+                try:
+                    urllib.request.urlretrieve(asset_url, str(RECV_ASSETS / name))
+                except Exception:
+                    continue  # skip a slide we couldn't fetch; keep the rest
+                srcs.append(f"/recv-asset/{name}")
+            if srcs:
+                items.append({"type": "slideshow", "srcs": srcs, "seconds": it["seconds"]})
         else:
             name = hashlib.sha256(it["asset_url"].encode()).hexdigest()[:16] + ".img"
             try:
