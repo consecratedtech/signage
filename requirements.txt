@@ -13,3 +13,6 @@ zeroconf>=0.131
 
 # Content handling (images, conversions)
 pillow>=10.4
+
+# QR code for the on-screen "scan to open" setup helper
+qrcode>=7.4

@@ -15,59 +15,65 @@
   #stage .layer{position:absolute;inset:0;opacity:0;transition:opacity .4s ease;background:#000}
   #stage .layer.active{opacity:1}
   /* Inactive layers stay rendered (opacity:0, NOT display:none) so the browser
-     does not throttle/pause their iframes — a Google Slides deck keeps
-     auto-advancing in the background instead of resetting to slide one. */
+     does not throttle/pause their iframes. */
   #stage .layer img{position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:contain;background:#000}
   #stage .layer iframe{position:absolute;left:0;top:0;width:100%;height:100%;border:0;background:#000}
   /* A Google Slides embed always renders a bottom control/branding bar that no
      URL param can disable. Oversize the iframe so that bar falls past the bottom
      of the (overflow:hidden) stage and is clipped away. */
   #stage .layer iframe.slides{height:calc(100% + 60px)}
-  #idle{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9aa;font-size:18px;text-align:center;padding:24px}
+
+  /* The idle / setup screen — shown only when there is nothing to play, the
+     playlist is empty, or the device is first being set up. It is the one place
+     the device's address lives; while content plays, the screen stays clean. */
+  #idle{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+        color:#9aa;text-align:center;padding:24px}
   #idle .big{font-size:clamp(20px,3.2vw,32px);color:#cdd;margin-bottom:16px}
   #idle .hint{font-size:clamp(14px,1.7vw,19px);color:#9aa;line-height:1.5}
   #idle b,#pair .url{color:#F0A93B;font-weight:700}
+  .qr{display:none;margin:22px auto 6px;width:min(34vmin,240px);height:auto;
+      background:#fff;padding:12px;border-radius:14px;image-rendering:pixelated}
+  .qrcap{color:#7d8a86;font-size:clamp(12px,1.4vw,15px);letter-spacing:.04em}
+
   #pair{position:fixed;inset:0;display:none;flex-direction:column;align-items:center;justify-content:center;
         background:rgba(8,10,12,.92);color:#fff;text-align:center;padding:24px;z-index:10}
   #pair .label{color:#9aa;font-size:20px;margin-bottom:18px}
   #pair .code{font:700 clamp(48px,12vw,140px)/1 ui-monospace,monospace;letter-spacing:.12em;color:#F0A93B}
   #pair .sub{color:#9aa;font-size:16px;margin-top:18px}
-  /* Always-on address badge: lets an operator read this device's IP/URL while
-     content is playing — useful after a reboot when DHCP may hand out a new
-     address. Hidden on the idle screen, which already shows the address big. */
-  #addr{position:fixed;left:14px;bottom:12px;z-index:5;display:none;
-        font:600 13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.02em;
-        color:#fff;background:rgba(8,10,12,.5);padding:7px 11px;border-radius:8px;
-        pointer-events:none}
 </style>
 </head>
 <body>
   <div id="stage"></div>
   <div id="idle">
     <div>
-      <div class="big">Waiting for content…</div>
+      <div class="big">Waiting for content&hellip;</div>
       <div class="hint">Open <b id="connectUrl">this device's address</b><br>on your phone or computer to set it up</div>
+      <img id="qrIdle" class="qr" alt="QR code that opens this device">
+      <div class="qrcap" id="qrIdleCap" style="display:none">Scan to open</div>
     </div>
   </div>
   <div id="pair">
     <div class="label">To connect this screen, enter this code on your controller</div>
     <div class="code" id="pairCode"></div>
-    <div class="sub">This code disappears in a few minutes. · This screen: <span class="url" id="pairUrl"></span></div>
+    <img id="qrPair" class="qr" alt="QR code that opens this device">
+    <div class="sub">This code disappears in a few minutes. &middot; This screen: <span class="url" id="pairUrl"></span></div>
   </div>
-  <div id="addr"></div>
 
   <script>
     const stage = document.getElementById('stage');
     const idle = document.getElementById('idle');
     const pair = document.getElementById('pair');
     const pairCode = document.getElementById('pairCode');
-    let items = [];
-    let pos = 0;
+    let items = [];      // playlist items, in playlist order
+    let order = [];      // play sequence (indices into items): shuffled or 0..n-1
+    let pos = 0;         // position within `order`
     let timer = null;
     let signature = '';
-    // Cache of mounted layers, keyed by "index|src". Layers are built once and
-    // reused across cycles so iframes (especially Google Slides) are never
-    // reloaded; crossfading swaps which one is visible.
+    let shuffle = false;
+    let lastUrl = '';    // current connect URL (so the QR refreshes if the IP changes)
+    // Cache of mounted layers, one per item, keyed by "index|src". Built once and
+    // reused so iframes are not needlessly reloaded; crossfading swaps which is
+    // visible. A Google Slides layer is the exception — see activate().
     let layers = [];
 
     async function loadData() {
@@ -75,11 +81,20 @@
         const r = await fetch('/api/screen-data', { cache: 'no-store' });
         const data = await r.json();
 
-        // show where to reach this device (idle screen + pairing overlay)
+        // Where to reach this device (idle screen + pairing overlay), plus a QR
+        // so it can be opened by scanning instead of typing an IP.
         if (data.connect_url) {
           document.getElementById('connectUrl').textContent = data.connect_url;
           document.getElementById('pairUrl').textContent = data.connect_url;
-          document.getElementById('addr').textContent = data.connect_url;
+          if (data.connect_url !== lastUrl) {
+            lastUrl = data.connect_url;
+            // the query is only a cache-buster; the server always encodes its own address
+            const qsrc = '/qr.png?u=' + encodeURIComponent(data.connect_url);
+            const qi = document.getElementById('qrIdle'), qp = document.getElementById('qrPair');
+            qi.onload = () => { qi.style.display = 'block'; document.getElementById('qrIdleCap').style.display = 'block'; };
+            qp.onload = () => { qp.style.display = 'block'; };
+            qi.src = qsrc; qp.src = qsrc;
+          }
         }
 
         // pairing code overlay (shown over whatever is playing)
@@ -90,12 +105,15 @@
           pair.style.display = 'none';
         }
 
-        const sig = JSON.stringify(data.items || []);
+        // Rebuild only when the content OR the shuffle setting actually changes.
+        const sig = JSON.stringify({ i: data.items || [], s: !!data.shuffle });
         if (sig !== signature) {
           signature = sig;
           items = data.items || [];
+          shuffle = !!data.shuffle;
           pos = 0;
-          rebuild();   // (re)build layers only when content actually changes
+          rebuild();
+          buildOrder();
           show();
         }
       } catch (e) { /* keep showing what we have if a fetch fails */ }
@@ -106,6 +124,10 @@
       // to load in an iframe; '/embed' is the frameable published form.
       u = u || '';
       return /docs\.google\.com\/presentation/.test(u) ? u.replace('/pub', '/embed') : u;
+    }
+
+    function isSlides(src) {
+      return /docs\.google\.com\/presentation/.test(src || '');
     }
 
     // Build the DOM layer (an absolutely-positioned wrapper holding the <img> or
@@ -119,55 +141,88 @@
         el = Object.assign(document.createElement('img'), { src });
       } else {
         el = Object.assign(document.createElement('iframe'), { src, allow: 'autoplay; fullscreen' });
-        // tag Slides embeds so the CSS can clip their bottom branding bar
-        if (/docs\.google\.com\/presentation/.test(src)) el.className = 'slides';
+        if (isSlides(src)) el.className = 'slides';  // tag so CSS clips the branding bar
       }
       layer.appendChild(el);
       return layer;
     }
 
-    // Reconcile the mounted layers with the current `items`. Reuse an existing
-    // layer when the same item (same index + src) is still present so its iframe
-    // is never reloaded; build new layers for new content; drop layers for
-    // content that is gone. Only ever called when the items signature changed.
+    // Reconcile the mounted layers with the current `items`: reuse a layer when
+    // the same item is still at the same slot (so its iframe is not reloaded),
+    // build new ones for new content, drop ones for content that is gone.
     function rebuild() {
       const next = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
+        const src = embedSrc(item.src);
         const key = i + '|' + (item.src || '');
         const prev = layers[i];
         let entry;
         if (prev && prev.key === key) {
-          entry = prev;            // unchanged at this slot — keep mounted as-is
+          entry = prev;
         } else {
-          entry = { key, item, el: buildLayer(item) };
+          entry = { key, item, src, slides: isSlides(src), el: buildLayer(item) };
           stage.appendChild(entry.el);
         }
         next.push(entry);
       }
-      // remove any cached layers that are no longer part of the playlist
       for (const old of layers) {
         if (!next.includes(old) && old.el.parentNode) old.el.parentNode.removeChild(old.el);
       }
       layers = next;
     }
 
+    // Decide the order items play in. Default: top-to-bottom, exactly as listed
+    // on the controller (no surprises). Shuffle is opt-in from the panel.
+    function buildOrder() {
+      order = items.map((_, i) => i);
+      if (shuffle) {
+        for (let i = order.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [order[i], order[j]] = [order[j], order[i]];
+        }
+      }
+    }
+
+    // Bring item `idx` to the front. For a Google Slides deck we reload it first
+    // so it always restarts at slide 1 and plays through in order — otherwise a
+    // hidden deck keeps auto-advancing and reappears on a random slide. We hold
+    // the previous layer up until the deck has loaded, so there is no black gap.
+    function activate(idx, after) {
+      const entry = layers[idx];
+      const reveal = () => {
+        layers.forEach((e, n) => e.el.classList.toggle('active', n === idx));
+        if (after) after();
+      };
+      if (entry && entry.slides) {
+        const iframe = entry.el.querySelector('iframe');
+        let done = false;
+        const go = () => { if (done) return; done = true; reveal(); };
+        iframe.onload = go;
+        iframe.src = entry.src;       // reassigning src reloads the deck → slide 1
+        setTimeout(go, 3000);         // fail-safe if onload never fires
+      } else {
+        reveal();
+      }
+    }
+
     function show() {
       if (timer) clearTimeout(timer);
-      const addr = document.getElementById('addr');
-      if (!items.length) { idle.style.display = 'flex'; addr.style.display = 'none'; return; }
-      idle.style.display = 'none'; addr.style.display = 'block';
-      const i = pos % items.length;
-      // Crossfade: reveal the active layer, fade the rest. Inactive layers stay
-      // in the DOM at opacity:0 so their iframes keep running in the background.
-      layers.forEach((entry, n) => entry.el.classList.toggle('active', n === i));
-      // A single self-advancing item (e.g. a Google Slides deck that loops on
-      // its own) should stay mounted. Only rotate when there's more than one,
-      // otherwise nothing is gained by re-running the timer.
-      if (items.length > 1) {
-        const secs = Math.max(3, items[i].seconds || 10);
-        timer = setTimeout(() => { pos = (pos + 1) % items.length; show(); }, secs * 1000);
+      if (!items.length) {            // nothing to play → show the idle/setup screen
+        idle.style.display = 'flex';
+        layers.forEach(e => e.el.classList.remove('active'));
+        return;
       }
+      idle.style.display = 'none';
+      const idx = order[pos % order.length];
+      activate(idx, () => {
+        // A single self-advancing deck loops on its own; only run the rotation
+        // timer when there is more than one item to rotate between.
+        if (items.length > 1) {
+          const secs = Math.max(3, items[idx].seconds || 10);
+          timer = setTimeout(() => { pos = (pos + 1) % order.length; show(); }, secs * 1000);
+        }
+      });
     }
 
     loadData();

@@ -17,6 +17,8 @@ This service listens on the LAN. Login still needs to gate it before release.
 """
 
 import html as _htmllib
+import io
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Form, Request, UploadFile
@@ -25,16 +27,27 @@ from fastapi.responses import (
     HTMLResponse,
     JSONResponse,
     RedirectResponse,
+    Response,
 )
 
-from . import auth, commands, config, discovery, hostname, identity, library, pairing, sync
+from . import (
+    activity,
+    auth,
+    commands,
+    config,
+    discovery,
+    hostname,
+    identity,
+    library,
+    pairing,
+    sync,
+)
 
 _SETUP_HTML = (Path(__file__).parent / "pages" / "setup.html").read_text(encoding="utf-8")
 _SCREEN_HTML = (Path(__file__).parent / "pages" / "screen.html").read_text(encoding="utf-8")
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="signage")
     device_id = identity.get_or_create_device_id()
 
     def current() -> dict:
@@ -43,8 +56,7 @@ def create_app() -> FastAPI:
             cfg["name"] = identity.default_name(device_id)
         return cfg
 
-    @app.on_event("startup")
-    def _advertise():
+    def _advertise_now(app: FastAPI) -> None:
         # Best-effort LAN advertisement so controllers can discover this device.
         # Discovery must never block or crash the app, so failures are swallowed.
         try:
@@ -54,6 +66,34 @@ def create_app() -> FastAPI:
             )
         except Exception:
             app.state.zc = None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Replaces the deprecated @app.on_event("startup") and also tears the
+        # mDNS advertisement down cleanly on shutdown.
+        _advertise_now(app)
+        try:
+            yield
+        finally:
+            zc = getattr(app.state, "zc", None)
+            if zc is not None:
+                try:
+                    zc.close()
+                except Exception:
+                    pass
+
+    app = FastAPI(title="signage", lifespan=lifespan)
+
+    def _readvertise() -> None:
+        # Role or name changed — re-publish so discovery reflects the current
+        # state instead of the value captured at boot.
+        zc = getattr(app.state, "zc", None)
+        if zc is not None:
+            try:
+                zc.close()
+            except Exception:
+                pass
+        _advertise_now(app)
 
     @app.get("/healthz")
     def healthz():
@@ -76,6 +116,8 @@ def create_app() -> FastAPI:
         cfg = current()
         cfg["role"] = role
         config.save_config(cfg)
+        _readvertise()
+        activity.log(f"Switched this device's role to {role}")
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/name")
@@ -85,6 +127,8 @@ def create_app() -> FastAPI:
         config.save_config(cfg)
         if cfg.get("sync_hostname", True):
             hostname.apply_hostname(cfg["name"])
+        _readvertise()
+        activity.log(f"Renamed this device to {cfg['name']}")
         return RedirectResponse("/", status_code=303)
 
     # --- the screen the kiosk shows -----------------------------------------
@@ -106,6 +150,7 @@ def create_app() -> FastAPI:
         return {
             "items": items,
             "pairing_code": pairing.current_code(),
+            "shuffle": bool(current().get("shuffle")),
             # so a display with nothing on it can show where to connect
             "connect_url": f"http://{discovery.primary_ip()}:{config.PORT}",
         }
@@ -124,11 +169,27 @@ def create_app() -> FastAPI:
             return JSONResponse({"error": "not found"}, status_code=404)
         return FileResponse(path)
 
+    @app.get("/qr.png")
+    def qr_png():
+        """A QR code for this device's address, shown on the idle/setup screen so
+        someone can open the control panel by scanning instead of typing an IP.
+        The encoded address is always this device's own — never client input."""
+        try:
+            import qrcode  # local import: a missing optional dep must not block boot
+        except Exception:
+            return Response(status_code=404)
+        url = f"http://{discovery.primary_ip()}:{config.PORT}"
+        img = qrcode.make(url)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return Response(content=buf.getvalue(), media_type="image/png")
+
     # --- content ------------------------------------------------------------
 
     @app.post("/api/content/url")
     def add_url(url: str = Form(...), seconds: int = Form(library.DEFAULT_URL_SECONDS)):
         library.add_url(url, seconds)
+        activity.log("Added a link to the playlist", url)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/content/upload")
@@ -137,16 +198,39 @@ def create_app() -> FastAPI:
         name = file.filename or "upload"
         try:
             if name.lower().endswith((".pptx", ".ppt")):
-                library.add_pptx(name, data, seconds)
+                added = library.add_pptx(name, data, seconds)
+                activity.log(f"Added a PowerPoint ({len(added)} slide(s))", name)
             else:
                 library.add_image(name, data, seconds)
+                activity.log("Added an image to the playlist", name)
         except RuntimeError as exc:
+            activity.log("An upload could not be processed", str(exc))
             return JSONResponse({"error": str(exc)}, status_code=400)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/content/remove")
     def remove_content(item_id: str = Form(...)):
         library.remove(item_id)
+        activity.log("Removed an item from the playlist")
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/api/content/seconds")
+    def content_seconds(item_id: str = Form(...), seconds: int = Form(...)):
+        library.set_seconds(item_id, seconds)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/api/content/move")
+    def content_move(item_id: str = Form(...), direction: str = Form(...)):
+        if direction in ("up", "down"):
+            library.move(item_id, direction)
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/api/playback")
+    def set_playback(shuffle: str = Form(default="")):
+        cfg = current()
+        cfg["shuffle"] = bool(shuffle)
+        config.save_config(cfg)
+        activity.log("Shuffle turned " + ("on" if cfg["shuffle"] else "off"))
         return RedirectResponse("/", status_code=303)
 
     # --- pairing: display side ----------------------------------------------
@@ -173,6 +257,7 @@ def create_app() -> FastAPI:
         except Exception:
             return JSONResponse({"error": "claim failed"}, status_code=400)
         result["name"] = current()["name"]
+        activity.log("Paired with a controller", body.get("controller", {}).get("name", ""))
         return result
 
     @app.post("/api/playlist")
@@ -213,14 +298,17 @@ def create_app() -> FastAPI:
             "address": discovery.primary_ip(),
         }
         try:
-            pairing.claim_display(address, port, code, controller_meta)
+            record = pairing.claim_display(address, port, code, controller_meta)
         except Exception as exc:
+            activity.log("A pairing attempt failed", str(exc))
             return JSONResponse({"error": f"Could not pair: {exc}"}, status_code=400)
+        activity.log("Paired a display", record.get("name") or address)
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/displays/remove")
     def displays_remove(device: str = Form(..., alias="device_id")):
         pairing.remove_display(device)
+        activity.log("Unpaired a display")
         return RedirectResponse("/", status_code=303)
 
     @app.post("/api/push")
@@ -231,6 +319,8 @@ def create_app() -> FastAPI:
         base_url = f"http://{discovery.primary_ip()}:{config.PORT}"
         manifest = sync.build_manifest(library.list_items(), current()["name"], base_url)
         results = sync.push_all(displays, manifest, auth.get_or_create_site_key())
+        ok = sum(1 for r in results if r.get("ok"))
+        activity.log(f"Pushed content to {ok} of {len(results)} display(s)")
         return {"results": results}
 
     return app
@@ -374,6 +464,17 @@ _CSS = """
      padding:7px 12px;border-radius:9px;line-height:1}
   .x:hover{background:#fdecea;border-color:#e29a93}
   .empty{color:var(--muted)}
+  /* reorder arrows + per-item second editing + shuffle toggle */
+  .item .ord{display:flex;flex-direction:column;gap:3px;flex:none}
+  .mv{background:var(--card);border:1px solid var(--line);color:var(--muted);
+      padding:1px 9px;border-radius:7px;line-height:1.15;font-size:.66rem}
+  .mv:hover:not(:disabled){border-color:var(--pine);color:var(--pine)}
+  .mv:disabled{opacity:.3;cursor:default}
+  .item .secs .set{padding:8px 12px}
+  .shuffle{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+           margin:0 0 12px;padding:0 0 14px;border-bottom:1px solid var(--line)}
+  .shuffle label{display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer}
+  .shuffle input[type=checkbox]{width:18px;height:18px;accent-color:var(--pine)}
 
   /* pairing code */
   .code{
@@ -566,15 +667,36 @@ def _splash(cfg: dict) -> HTMLResponse:
 
 
 def _content_body(cfg: dict) -> str:
-    """Content management shared by both roles: add URL/Slides, upload, playlist."""
+    """Content management shared by both roles: add URL/Slides, upload, and the
+    playlist with per-item ordering + timing."""
     items = library.list_items()
     if items:
         rows = ""
-        for it in items:
+        last = len(items) - 1
+        for n, it in enumerate(items):
+            up_dis = " disabled" if n == 0 else ""
+            dn_dis = " disabled" if n == last else ""
             rows += f"""
               <div class="item">
+                <span class="ord">
+                  <form method="post" action="/api/content/move">
+                    <input type="hidden" name="item_id" value="{it['id']}">
+                    <input type="hidden" name="direction" value="up">
+                    <button class="mv" title="Move up" aria-label="Move up"{up_dis}>&#9650;</button>
+                  </form>
+                  <form method="post" action="/api/content/move">
+                    <input type="hidden" name="item_id" value="{it['id']}">
+                    <input type="hidden" name="direction" value="down">
+                    <button class="mv" title="Move down" aria-label="Move down"{dn_dis}>&#9660;</button>
+                  </form>
+                </span>
                 <span class="name">{_esc(it['name'])}</span>
-                <span class="meta">{it['seconds']}s</span>
+                <form class="secs" method="post" action="/api/content/seconds">
+                  <input type="hidden" name="item_id" value="{it['id']}">
+                  <input name="seconds" type="number" min="{library.MIN_SECONDS}"
+                         value="{it['seconds']}" title="Seconds on screen" aria-label="Seconds on screen">
+                  <button class="btn-ghost set" title="Save time">Set</button>
+                </form>
                 <form method="post" action="/api/content/remove">
                   <input type="hidden" name="item_id" value="{it['id']}">
                   <button class="x" title="Remove">&times;</button>
@@ -585,6 +707,15 @@ def _content_body(cfg: dict) -> str:
         playlist_inner = ('<p class="empty">Nothing yet — add a link or upload '
                           'something below.</p>')
 
+    shuffle_checked = " checked" if cfg.get("shuffle") else ""
+    shuffle_row = f"""
+        <form method="post" action="/api/playback" class="shuffle">
+          <label><input type="checkbox" name="shuffle" value="on"{shuffle_checked}
+            onchange="this.form.submit()"> Shuffle order</label>
+          <span class="hint" style="margin:0">Off (default) plays the list top to bottom, in order.</span>
+          <noscript><button class="btn-ghost" type="submit">Save</button></noscript>
+        </form>"""
+
     return f"""
       <div class="card">
         <h2>Add a web page or Google Slides {_tip('slides')}</h2>
@@ -592,9 +723,13 @@ def _content_body(cfg: dict) -> str:
           &ldquo;Publish to web&rdquo; link.</p>
         <form method="post" action="/api/content/url" class="row">
           <input name="url" placeholder="https://… or a Google Slides 'Publish to web' link" required>
-          <input name="seconds" type="number" min="3" value="15" title="seconds on screen">
+          <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="15" title="seconds on screen">
           <button class="btn-primary" type="submit">Add</button>
         </form>
+        <p class="hint tail">A Google Slides deck advances by itself and restarts
+          from slide&nbsp;1 each time it comes up. Give it enough seconds to play
+          all the way through (about your per-slide time &times; the number of
+          slides) so the whole deck shows before the next item.</p>
       </div>
 
       <div class="card">
@@ -602,13 +737,16 @@ def _content_body(cfg: dict) -> str:
         <p class="hint">PowerPoint is converted to slides automatically.</p>
         <form method="post" action="/api/content/upload" enctype="multipart/form-data" class="row">
           <input name="file" type="file" accept="image/*,.pptx,.ppt" required>
-          <input name="seconds" type="number" min="3" value="10" title="seconds per image">
+          <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="10" title="seconds per image">
           <button class="btn-primary" type="submit">Upload</button>
         </form>
       </div>
 
       <div class="card">
         <h2>Playlist {_tip('playlist')}</h2>
+        <p class="hint">Plays in this order, top to bottom. Use the arrows to
+          reorder, and set how long each item stays on screen.</p>
+        {shuffle_row}
         {playlist_inner}
       </div>
     """

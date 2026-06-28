@@ -38,7 +38,7 @@ def _seed_from_env() -> dict:
     role = os.environ.get("SIGNAGE_ROLE")
     if role not in VALID_ROLES:
         role = None  # unconfigured -> first-boot splash
-    return {"role": role, "name": None, "sync_hostname": True}
+    return {"role": role, "name": None, "sync_hostname": True, "shuffle": False}
 
 
 def load_config() -> dict:

@@ -19,6 +19,7 @@ ASSETS = config.DATA / "assets"
 
 DEFAULT_URL_SECONDS = 15
 DEFAULT_IMAGE_SECONDS = 10
+MIN_SECONDS = 3  # never let an item flash by faster than this
 
 
 def _load() -> list:
@@ -121,6 +122,29 @@ def reorder(order: list) -> None:
     new = [by_id[i] for i in order if i in by_id]
     new += [i for i in items if i["id"] not in kept]  # anything not listed stays at the end
     _save(new)
+
+
+def move(item_id: str, direction: str) -> None:
+    """Nudge one item up or down a single slot. Lets an operator fix the play
+    order from the panel without removing and re-adding the item."""
+    items = _load()
+    idx = next((n for n, it in enumerate(items) if it["id"] == item_id), None)
+    if idx is None:
+        return
+    swap = idx - 1 if direction == "up" else idx + 1
+    if 0 <= swap < len(items):
+        items[idx], items[swap] = items[swap], items[idx]
+        _save(items)
+
+
+def set_seconds(item_id: str, seconds: int) -> None:
+    """Change how long one item stays on screen, in place (no re-add needed)."""
+    items = _load()
+    for it in items:
+        if it["id"] == item_id:
+            it["seconds"] = max(MIN_SECONDS, int(seconds))
+            break
+    _save(items)
 
 
 def asset_path(ref: str) -> Path:

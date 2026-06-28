@@ -20,5 +20,8 @@ config.json
 # Claude Code (local machine settings; not shared)
 .claude/settings.local.json
 
+# Local working backups (not shared)
+.backups/
+
 HANDOFF.md
 signage HANDOFF.md
