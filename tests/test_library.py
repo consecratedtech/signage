@@ -294,9 +294,9 @@ def test_measure_slides_unknown_id_is_noop():
 # --- video + YouTube --------------------------------------------------------
 
 def test_add_url_youtube_becomes_muted_autoplay_embed():
-    item = library.add_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    item = library.add_url("https://www.youtube.com/watch?v=VIDEOID0001")
     assert item["type"] == "url"
-    assert "youtube.com/embed/dQw4w9WgXcQ" in item["ref"]
+    assert "youtube.com/embed/VIDEOID0001" in item["ref"]
     assert "autoplay=1" in item["ref"] and "mute=1" in item["ref"]
     assert item["name"] == "YouTube video"
 

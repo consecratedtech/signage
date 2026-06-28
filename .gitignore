@@ -4,12 +4,17 @@ __pycache__/
 .venv/
 venv/
 
-# Runtime data — NEVER commit (secrets live here)
+# Runtime data — NEVER commit (secrets + pushed content live here)
 data/
 *.enc
 *.key
 device_id
 config.json
+library.json
+received.json
+activity.json
+promote.request
+promote.status
 
 # Editors / OS
 .DS_Store
