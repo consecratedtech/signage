@@ -243,6 +243,12 @@ UtmpMode=user
 # cage (wlroots) needs XDG_RUNTIME_DIR; enable-linger (above) creates /run/user/<uid>.
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=XDG_SESSION_TYPE=wayland
+# Wait until the web app actually answers before launching the browser. systemd
+# treats ${APP}.service as "started" the moment the process spawns, but uvicorn
+# needs several seconds to import deps and bind the port; without this gate
+# Chromium loads too early, gets ERR_CONNECTION_REFUSED, and never retries. On
+# timeout this exits non-zero so Restart=always retries the whole unit.
+ExecStartPre=/bin/sh -c 'for i in \$(seq 1 60); do curl -sf http://localhost:${WEB_PORT}/healthz >/dev/null 2>&1 && exit 0; sleep 1; done; exit 1'
 ExecStart=/usr/bin/cage -- ${CHROMIUM_PKG} \\
   --kiosk --noerrdialogs --disable-infobars --incognito \\
   --check-for-update-interval=31536000 \\

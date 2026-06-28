@@ -17,17 +17,37 @@ controller.
 
 ## Get started
 
-On the device:
+On the device (Raspberry Pi OS Lite 64-bit, or Debian 13):
 
     git clone https://github.com/consecratedtech/signage.git
     cd signage
     sudo ./install.sh
 
+If you see `Permission denied` running the script — which can happen if the
+files were copied from Windows or unpacked from a downloaded zip (either can
+drop the executable bit) — run it through bash instead:
+
+    sudo bash install.sh
+
+or make it executable first:
+
+    chmod +x install.sh && sudo ./install.sh
+
 The installer checks the system, asks whether this device shows content (a
-display) or runs the controls, installs what it needs, and sets it to start on
-boot. Re-check anything later with `sudo ./install.sh --check`.
+**display**) or runs the controls (the **controller**), installs what it needs,
+and sets everything to start on boot. It also sets up the boot-to-screen kiosk
+for you — the device powers on straight into full-screen content, with no login
+prompt and no further manual steps. A clean reboot (or a power cut) comes back
+up the same way on its own. Re-check the system any time with:
+
+    sudo ./install.sh --check
 
 Then open the controller from your phone or computer at `http://<device-ip>:8080`.
+
+> **Trying it on your computer first?** `run.sh` starts the app locally for a
+> quick look — but don't use it on an installed device: the installed service
+> already owns port 8080, so `run.sh` there will fail with "address already in
+> use." That's expected, not a bug.
 
 ## Goals
 
