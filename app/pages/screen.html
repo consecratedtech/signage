@@ -8,12 +8,21 @@
 <style>
   html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:system-ui,sans-serif}
   #stage{position:fixed;inset:0;background:#000;overflow:hidden}
-  #stage img{position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:contain;background:#000}
-  #stage iframe{position:absolute;left:0;top:0;width:100%;height:100%;border:0;background:#000}
+  /* Each playlist item lives in its own absolutely-stacked layer. Layers are
+     built once and kept mounted; switching items crossfades opacity so there is
+     never a black gap or a "loading" flash between items. The black stage
+     background shows through any letterboxing. */
+  #stage .layer{position:absolute;inset:0;opacity:0;transition:opacity .4s ease;background:#000}
+  #stage .layer.active{opacity:1}
+  /* Inactive layers stay rendered (opacity:0, NOT display:none) so the browser
+     does not throttle/pause their iframes — a Google Slides deck keeps
+     auto-advancing in the background instead of resetting to slide one. */
+  #stage .layer img{position:absolute;inset:0;width:100%;height:100%;border:0;object-fit:contain;background:#000}
+  #stage .layer iframe{position:absolute;left:0;top:0;width:100%;height:100%;border:0;background:#000}
   /* A Google Slides embed always renders a bottom control/branding bar that no
      URL param can disable. Oversize the iframe so that bar falls past the bottom
      of the (overflow:hidden) stage and is clipped away. */
-  #stage iframe.slides{height:calc(100% + 60px)}
+  #stage .layer iframe.slides{height:calc(100% + 60px)}
   #idle{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;color:#9aa;font-size:18px;text-align:center;padding:24px}
   #idle .big{font-size:clamp(20px,3.2vw,32px);color:#cdd;margin-bottom:16px}
   #idle .hint{font-size:clamp(14px,1.7vw,19px);color:#9aa;line-height:1.5}
@@ -23,11 +32,6 @@
   #pair .label{color:#9aa;font-size:20px;margin-bottom:18px}
   #pair .code{font:700 clamp(48px,12vw,140px)/1 ui-monospace,monospace;letter-spacing:.12em;color:#F0A93B}
   #pair .sub{color:#9aa;font-size:16px;margin-top:18px}
-  /* Signage has no operator standing at the screen, so hide the mouse pointer.
-     A top-most transparent layer makes "no cursor" win even over a cross-origin
-     iframe (a parent's cursor style cannot reach inside the embedded frame). */
-  html,body{cursor:none}
-  #shield{position:fixed;inset:0;z-index:9999;cursor:none}
 </style>
 </head>
 <body>
@@ -43,7 +47,6 @@
     <div class="code" id="pairCode"></div>
     <div class="sub">This code disappears in a few minutes. · This screen: <span class="url" id="pairUrl"></span></div>
   </div>
-  <div id="shield"></div>
 
   <script>
     const stage = document.getElementById('stage');
@@ -54,6 +57,10 @@
     let pos = 0;
     let timer = null;
     let signature = '';
+    // Cache of mounted layers, keyed by "index|src". Layers are built once and
+    // reused across cycles so iframes (especially Google Slides) are never
+    // reloaded; crossfading swaps which one is visible.
+    let layers = [];
 
     async function loadData() {
       try {
@@ -79,6 +86,7 @@
           signature = sig;
           items = data.items || [];
           pos = 0;
+          rebuild();   // (re)build layers only when content actually changes
           show();
         }
       } catch (e) { /* keep showing what we have if a fetch fails */ }
@@ -91,11 +99,11 @@
       return /docs\.google\.com\/presentation/.test(u) ? u.replace('/pub', '/embed') : u;
     }
 
-    function show() {
-      if (timer) clearTimeout(timer);
-      if (!items.length) { idle.style.display = 'flex'; stage.innerHTML = ''; return; }
-      idle.style.display = 'none';
-      const item = items[pos % items.length];
+    // Build the DOM layer (an absolutely-positioned wrapper holding the <img> or
+    // <iframe>) for one playlist item. Called once per item by rebuild().
+    function buildLayer(item) {
+      const layer = document.createElement('div');
+      layer.className = 'layer';
       const src = embedSrc(item.src);
       let el;
       if (item.type === 'image') {
@@ -105,14 +113,49 @@
         // tag Slides embeds so the CSS can clip their bottom branding bar
         if (/docs\.google\.com\/presentation/.test(src)) el.className = 'slides';
       }
-      stage.innerHTML = '';
-      stage.appendChild(el);
+      layer.appendChild(el);
+      return layer;
+    }
+
+    // Reconcile the mounted layers with the current `items`. Reuse an existing
+    // layer when the same item (same index + src) is still present so its iframe
+    // is never reloaded; build new layers for new content; drop layers for
+    // content that is gone. Only ever called when the items signature changed.
+    function rebuild() {
+      const next = [];
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const key = i + '|' + (item.src || '');
+        const prev = layers[i];
+        let entry;
+        if (prev && prev.key === key) {
+          entry = prev;            // unchanged at this slot — keep mounted as-is
+        } else {
+          entry = { key, item, el: buildLayer(item) };
+          stage.appendChild(entry.el);
+        }
+        next.push(entry);
+      }
+      // remove any cached layers that are no longer part of the playlist
+      for (const old of layers) {
+        if (!next.includes(old) && old.el.parentNode) old.el.parentNode.removeChild(old.el);
+      }
+      layers = next;
+    }
+
+    function show() {
+      if (timer) clearTimeout(timer);
+      if (!items.length) { idle.style.display = 'flex'; return; }
+      idle.style.display = 'none';
+      const i = pos % items.length;
+      // Crossfade: reveal the active layer, fade the rest. Inactive layers stay
+      // in the DOM at opacity:0 so their iframes keep running in the background.
+      layers.forEach((entry, n) => entry.el.classList.toggle('active', n === i));
       // A single self-advancing item (e.g. a Google Slides deck that loops on
       // its own) should stay mounted. Only rotate when there's more than one,
-      // otherwise we tear down and reload the iframe every few seconds — which
-      // looks like flashing and restarts the deck from slide one each time.
+      // otherwise nothing is gained by re-running the timer.
       if (items.length > 1) {
-        const secs = Math.max(3, item.seconds || 10);
+        const secs = Math.max(3, items[i].seconds || 10);
         timer = setTimeout(() => { pos = (pos + 1) % items.length; show(); }, secs * 1000);
       }
     }
