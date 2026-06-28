@@ -11,7 +11,8 @@ import json
 import re
 import secrets
 import shutil
-import urllib.request
+import subprocess
+import tempfile
 from pathlib import Path
 
 from . import config, convert
@@ -100,39 +101,55 @@ def _slides_autoplay(url: str) -> str:
     return url
 
 
-_SLIDES_UA = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
-
-
 def _slides_per_slide_ms(url: str) -> int:
     """The per-slide auto-advance time baked into a published Slides URL."""
     m = re.search(r"delayms=(\d+)", url)
     return int(m.group(1)) if m else 0
 
 
+def _chromium() -> str:
+    """Path to the same browser the screen already runs, or '' if it isn't here."""
+    for name in ("chromium", "chromium-browser", "google-chrome", "chrome"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return ""
+
+
 def _count_slides(url: str) -> int:
-    """Best-effort count of slides in a published Google Slides deck: fetch the
-    published page and count the slide entries in its embedded model. Returns 0
-    on any failure (offline, markup change) so callers fall back gracefully."""
+    """How many slides are in a published deck. Google no longer lists the slides in
+    the published page's HTML, so reading the raw page can't tell us — but the viewer
+    still writes 'Slide 1 of N' once it runs. So we open the deck headless in the same
+    browser the screen uses and read that number back. Returns 0 on any failure (no
+    browser, offline, slow link, layout change) so the caller falls back to letting
+    the operator set the time by hand."""
+    browser = _chromium()
+    if not browser:
+        return 0
+    # Don't auto-advance while measuring — we only want the 'of N' total, and that
+    # doesn't change as the deck plays, so let it sit on the first slide.
+    measure_url = re.sub(r"start=(?:true|1)", "start=false", url)
+    profile = tempfile.mkdtemp(prefix="signage-measure-")
     try:
-        fetch = url.replace("/embed", "/pub", 1)
-        req = urllib.request.Request(fetch, headers={"User-Agent": _SLIDES_UA})
-        # 15s, not a few seconds: the published page is several MB and a field /
-        # Wi-Fi connection is often slow. Measuring is worth the wait — it only
-        # blocks the one add request (the route runs off the event loop), and push
-        # retries it anyway. A truly offline add fails the connect fast, not here.
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            html = resp.read(8_000_000).decode("utf-8", "replace")
-        # Each slide is an array ["gID_0_N",<index>,"title",...] in the model.
-        n = len(re.findall(r'\["g[0-9a-z]+_\d+_\d+",\d+,"', html))
-        return n if 1 <= n <= 500 else 0
+        dom = subprocess.run(
+            [browser, "--headless=new", "--no-sandbox", "--disable-gpu",
+             "--disable-dev-shm-usage", "--hide-scrollbars", "--no-first-run",
+             "--disable-extensions", f"--user-data-dir={profile}",
+             "--virtual-time-budget=8000", "--dump-dom", measure_url],
+            capture_output=True, text=True, timeout=45,
+        ).stdout
     except Exception:
         return 0
+    finally:
+        shutil.rmtree(profile, ignore_errors=True)
+    m = re.search(r"[Ss]lide\s+\d+\s+of\s+(\d+)", dom)
+    n = int(m.group(1)) if m else 0
+    return n if 1 <= n <= 500 else 0
 
 
 def _slides_plan(url: str):
     """(slide_count, per_slide_seconds) for an auto-advancing published deck, or
-    (0, 0) when it can't be determined (no delayms / fetch / parse failure)."""
+    (0, 0) when it can't be determined (no delayms, or the deck couldn't be read)."""
     ms = _slides_per_slide_ms(url)
     if ms <= 0:
         return 0, 0
