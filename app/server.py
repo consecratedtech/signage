@@ -387,6 +387,15 @@ def create_app() -> FastAPI:
         library.set_seconds(item_id, seconds)
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/api/content/remeasure")
+    def content_remeasure(item_id: str = Form(...)):
+        # Read a Google Slides deck's length now (it needs to be online). Lets a deck
+        # that was added on a flaky connection size itself without re-adding it.
+        item = library.measure_slides(item_id)
+        if item.get("slides"):
+            activity.log(f"Read a Google Slides deck — {item['slides']} slide(s)")
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/api/content/move")
     def content_move(item_id: str = Form(...), direction: str = Form(...)):
         if direction in ("up", "down"):
@@ -1144,9 +1153,15 @@ def _content_body(cfg: dict, displays=None) -> str:
                   <button class="btn-ghost set" title="Save time">Set</button>
                 </form>"""
             elif is_slides_raw:
-                note = ('<span class="slidenote">&#9654; Google Slides &mdash; couldn\'t read its '
-                        'length; set the seconds to cover the whole deck</span>')
-                secs_html = secs_form.replace("{title}", "Seconds (cover the whole deck)")
+                note = ('<span class="slidenote">&#9654; Google Slides &mdash; haven\'t read its '
+                        'length yet; re-check while online, or set the seconds by hand</span>')
+                secs_html = (f"""
+                <form class="secs" method="post" action="/api/content/remeasure"
+                      title="Read the deck length now (needs to be online)">
+                  <input type="hidden" name="item_id" value="{it['id']}">
+                  <button class="btn-ghost set">Re-check length</button>
+                </form>"""
+                    + secs_form.replace("{title}", "Or set seconds to cover the whole deck"))
             else:
                 note = ""
                 secs_html = secs_form.replace("{title}", "Seconds on screen")
