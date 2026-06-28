@@ -59,18 +59,32 @@
       } catch (e) { /* keep showing what we have if a fetch fails */ }
     }
 
+    function embedSrc(u) {
+      // Google Slides '/pub' links send X-Frame-Options: SAMEORIGIN and refuse
+      // to load in an iframe; '/embed' is the frameable published form.
+      u = u || '';
+      return /docs\.google\.com\/presentation/.test(u) ? u.replace('/pub', '/embed') : u;
+    }
+
     function show() {
       if (timer) clearTimeout(timer);
       if (!items.length) { idle.style.display = 'flex'; stage.innerHTML = ''; return; }
       idle.style.display = 'none';
       const item = items[pos % items.length];
+      const src = embedSrc(item.src);
       const el = item.type === 'image'
-        ? Object.assign(document.createElement('img'), { src: item.src })
-        : Object.assign(document.createElement('iframe'), { src: item.src, allow: 'autoplay; fullscreen' });
+        ? Object.assign(document.createElement('img'), { src })
+        : Object.assign(document.createElement('iframe'), { src, allow: 'autoplay; fullscreen' });
       stage.innerHTML = '';
       stage.appendChild(el);
-      const secs = Math.max(3, item.seconds || 10);
-      timer = setTimeout(() => { pos = (pos + 1) % items.length; show(); }, secs * 1000);
+      // A single self-advancing item (e.g. a Google Slides deck that loops on
+      // its own) should stay mounted. Only rotate when there's more than one,
+      // otherwise we tear down and reload the iframe every few seconds — which
+      // looks like flashing and restarts the deck from slide one each time.
+      if (items.length > 1) {
+        const secs = Math.max(3, item.seconds || 10);
+        timer = setTimeout(() => { pos = (pos + 1) % items.length; show(); }, secs * 1000);
+      }
     }
 
     loadData();

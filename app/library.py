@@ -53,11 +53,16 @@ def _is_google_slides(url: str) -> bool:
 
 
 def _slides_autoplay(url: str) -> str:
-    """A 'Publish to web' Slides link auto-advances and loops on its own once
-    these params are set, so the screen needs nothing fancier than to show it."""
-    if _is_google_slides(url) and "/pub" in url and "start=" not in url:
+    """Normalize a 'Publish to web' Slides link for embedding: use the /embed
+    form (the /pub full-page view sends X-Frame-Options: SAMEORIGIN and will not
+    render inside the screen's iframe), and add the params that make it
+    auto-advance and loop on its own."""
+    if not _is_google_slides(url):
+        return url
+    url = url.replace("/pub", "/embed", 1)
+    if "start=" not in url:
         sep = "&" if "?" in url else "?"
-        return url + sep + "start=true&loop=true&delayms=10000"
+        url = url + sep + "start=true&loop=true&delayms=10000"
     return url
 
 
