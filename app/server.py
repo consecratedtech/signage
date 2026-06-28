@@ -281,16 +281,21 @@ def create_app() -> FastAPI:
                     items.append({"type": "video", "src": src, "seconds": item["seconds"]})
                 else:
                     items.append({"type": "image", "src": f"/asset/{item['ref']}", "seconds": item["seconds"]})
-        ips = discovery.lan_ips()
-        primary = ips[0] if ips else "127.0.0.1"
+        addrs = discovery.labeled_ips()
+        if not addrs:  # no iproute2 / unusual host: fall back to the plain list
+            addrs = [{"label": "Address", "ip": ip} for ip in discovery.lan_ips()]
+        primary = addrs[0]["ip"] if addrs else None
         return {
             "items": items,
             "pairing_code": pairing.current_code(),
             "shuffle": bool(current().get("shuffle")),
-            # where to reach this device: the primary address, plus every interface
-            # so a wired + Wi-Fi box always shows an address you can actually use.
-            "connect_url": f"http://{primary}:{config.PORT}",
-            "ips": ips,
+            # Where to reach this device: every interface, labeled, Wi-Fi first, so a
+            # wired + Wi-Fi box shows both and you use whichever network you're on.
+            # connect_url (and the QR) is the first one; null means no network yet.
+            "connect_url": f"http://{primary}:{config.PORT}" if primary else None,
+            "ips": [a["ip"] for a in addrs],
+            "addresses": [{"label": a["label"], "url": f"http://{a['ip']}:{config.PORT}"}
+                          for a in addrs],
         }
 
     @app.get("/recv-asset/{name}")

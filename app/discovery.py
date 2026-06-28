@@ -7,6 +7,7 @@ reading IP addresses off a screen. Manual add-by-address stays available as a
 fallback for networks where mDNS is blocked.
 """
 
+import os
 import socket
 import subprocess
 import time
@@ -36,8 +37,58 @@ def _all_ipv4() -> list:
     return found
 
 
+# Virtual / non-physical interfaces we never want to hand out an address from.
+_SKIP_IFACES = ("lo", "docker", "veth", "br-", "virbr", "vmnet", "tailscale", "zt")
+
+
+def _iface_label(iface: str, wifi: bool) -> str:
+    if wifi:
+        return "Wi-Fi"
+    if iface.startswith(("eth", "en")):
+        return "Ethernet"
+    return iface
+
+
+def labeled_ips() -> list:
+    """Every reachable IPv4 with a friendly label (Wi-Fi / Ethernet), Wi-Fi first.
+    A phone scanning the QR is on Wi-Fi, so when a box has both we lead with Wi-Fi.
+    Loopback, link-local, and virtual interfaces are left out, and the list is empty
+    when the device has no real network address yet (so the screen can say so instead
+    of showing a useless 127.0.0.1)."""
+    out = []
+    try:
+        res = subprocess.run(["ip", "-o", "-4", "addr", "show"],
+                             capture_output=True, text=True, timeout=2)
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            # "2: eth0    inet 192.168.1.5/24 brd ... scope global eth0"
+            if len(parts) < 4 or parts[2] != "inet":
+                continue
+            iface, ip = parts[1], parts[3].split("/")[0]
+            if iface.startswith(_SKIP_IFACES):
+                continue
+            if ip.startswith(("127.", "169.254.")):
+                continue
+            wifi = os.path.isdir(f"/sys/class/net/{iface}/wireless")
+            out.append({"ip": ip, "iface": iface, "wifi": wifi,
+                        "label": _iface_label(iface, wifi)})
+    except Exception:
+        return []
+    out.sort(key=lambda e: (not e["wifi"], e["iface"]))  # Wi-Fi first, then by name
+    seen, uniq = set(), []
+    for e in out:
+        if e["ip"] not in seen:
+            seen.add(e["ip"])
+            uniq.append(e)
+    return uniq
+
+
 def lan_ips() -> list:
-    """Addresses this device can be reached on, best-guess first. Offline-safe."""
+    """Addresses this device can be reached on, Wi-Fi first. Offline-safe."""
+    labeled = labeled_ips()
+    if labeled:
+        return [e["ip"] for e in labeled]
+    # Fallback for an environment without iproute2: the route probe, then hostname -I.
     ips = []
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
