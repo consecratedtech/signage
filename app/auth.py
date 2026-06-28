@@ -38,6 +38,30 @@ def verify(username: str, password: str) -> bool:
         return False
 
 
+def admin_username():
+    """The stored admin username, or None if no password has been set."""
+    admin = Vault().get("admin")
+    return admin.get("username") if admin else None
+
+
+def verify_password(password: str) -> bool:
+    """Check only the password against the stored hash — used when an already
+    signed-in admin changes or removes the password (the username is implied)."""
+    admin = Vault().get("admin")
+    if not admin:
+        return False
+    try:
+        return _ph.verify(admin["hash"], password)
+    except (VerifyMismatchError, InvalidHashError):
+        return False
+
+
+def clear_credentials() -> None:
+    """Remove the admin password entirely, returning the panel to open access.
+    Used by the `reset-password` recovery command and the in-UI 'remove' action."""
+    Vault().delete("admin")
+
+
 def get_or_create_site_key() -> str:
     vault = Vault()
     key = vault.get("site_key")

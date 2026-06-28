@@ -77,6 +77,20 @@ Then open the controller from your phone or computer at `http://<device-ip>:8080
 > already owns port 8080, so `run.sh` there will fail with "address already in
 > use." That's expected, not a bug.
 
+## Locking the control panel (optional)
+
+By default the control panel is open to anyone on your local network. That keeps
+a screen from ever locking you out, and is fine on a trusted office network. If
+you want a gate, open **Settings → Password** on the controller and set a
+username and password. After that, changing content or settings requires signing
+in — but your displays keep playing either way, and the device-to-device pairing
+and push stay cryptographically signed as before.
+
+Forgot the password? On the device itself (a keyboard, or over SSH), run this
+once to remove it and reopen the panel:
+
+    sudo -u signage /opt/signage/.venv/bin/python -m app reset-password
+
 ## Goals
 
 Built to one standard: it should fully work, and be nearly impossible to break.

@@ -18,6 +18,7 @@ This service listens on the LAN. Login still needs to gate it before release.
 
 import html as _htmllib
 import io
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from . import (
     identity,
     library,
     pairing,
+    sessions,
     sync,
 )
 
@@ -90,6 +92,106 @@ def create_app() -> FastAPI:
     # out to a CDN. Created defensively in case the folder is somehow absent.
     _STATIC_DIR.mkdir(parents=True, exist_ok=True)
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
+    # --- optional admin login gate -----------------------------------------
+    # Open by default: with no password set the panel behaves exactly as before.
+    # Once an admin sets a password, the human/admin routes require a session.
+    # Machine + kiosk routes stay open: the signed pairing/push endpoints, the
+    # screen and its data, image assets (a display fetches these during a push),
+    # the static files, the QR, and the login page itself.
+    _OPEN_EXACT = {"/healthz", "/screen", "/api/screen-data", "/login", "/logout",
+                   "/qr.png", "/favicon.ico"}
+    _OPEN_PREFIX = ("/asset/", "/recv-asset/", "/static/", "/api/pair/claim", "/api/playlist")
+    _login_fails = {}  # client ip -> (count, window_start): basic brute-force throttle
+
+    def _throttled(ip: str) -> bool:
+        rec = _login_fails.get(ip)
+        if not rec:
+            return False
+        count, start = rec
+        if time.time() - start > 300:
+            _login_fails.pop(ip, None)
+            return False
+        return count >= 8
+
+    def _note_fail(ip: str) -> None:
+        count, start = _login_fails.get(ip, (0, time.time()))
+        if time.time() - start > 300:
+            count, start = 0, time.time()
+        _login_fails[ip] = (count + 1, start)
+
+    def _authed(request: Request) -> bool:
+        return sessions.valid(request.cookies.get(sessions.COOKIE_NAME))
+
+    @app.middleware("http")
+    async def _auth_gate(request: Request, call_next):
+        path = request.url.path
+        if path in _OPEN_EXACT or any(path.startswith(p) for p in _OPEN_PREFIX):
+            return await call_next(request)
+        if not auth.has_credentials():        # no password set → open access
+            return await call_next(request)
+        if _authed(request):
+            return await call_next(request)
+        # Browser navigation (any non-API GET) goes to the login page; API calls
+        # and form posts get a clean 401 so callers don't mistake HTML for data.
+        if request.method == "GET" and not path.startswith("/api/"):
+            return RedirectResponse("/login", status_code=303)
+        return JSONResponse({"error": "login required"}, status_code=401)
+
+    @app.get("/login", response_class=HTMLResponse)
+    def login_form(request: Request):
+        if not auth.has_credentials() or _authed(request):
+            return RedirectResponse("/", status_code=303)
+        return _login_page(current())
+
+    @app.post("/login")
+    def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+        ip = request.client.host if request.client else "?"
+        if _throttled(ip):
+            return _login_page(current(), "Too many attempts. Wait a minute, then try again.")
+        if auth.verify(username.strip(), password):
+            _login_fails.pop(ip, None)
+            resp = RedirectResponse("/", status_code=303)
+            resp.set_cookie(sessions.COOKIE_NAME, sessions.create(),
+                            httponly=True, samesite="lax", max_age=sessions.TTL, path="/")
+            activity.log("Signed in to the control panel")
+            return resp
+        _note_fail(ip)
+        activity.log("A sign-in attempt failed")
+        return _login_page(current(), "That username or password didn't match.")
+
+    @app.post("/logout")
+    def logout(request: Request):
+        sessions.destroy(request.cookies.get(sessions.COOKIE_NAME))
+        resp = RedirectResponse("/login", status_code=303)
+        resp.delete_cookie(sessions.COOKIE_NAME, path="/")
+        return resp
+
+    @app.post("/api/password/set")
+    def password_set(request: Request, username: str = Form(...),
+                     password: str = Form(...), current_password: str = Form(default="")):
+        # Changing an existing password needs a live session or the current one;
+        # setting the very first password is open, like first-run setup.
+        if auth.has_credentials() and not _authed(request) and not auth.verify_password(current_password):
+            return JSONResponse({"error": "current password required"}, status_code=403)
+        if len(password) < 6:
+            return JSONResponse({"error": "Password must be at least 6 characters."}, status_code=400)
+        first = not auth.has_credentials()
+        auth.set_credentials(username.strip() or "admin", password)
+        resp = RedirectResponse("/", status_code=303)
+        resp.set_cookie(sessions.COOKIE_NAME, sessions.create(),
+                        httponly=True, samesite="lax", max_age=sessions.TTL, path="/")
+        activity.log("Set the control-panel password" if first else "Changed the control-panel password")
+        return resp
+
+    @app.post("/api/password/clear")
+    def password_clear(request: Request, current_password: str = Form(default="")):
+        if not _authed(request) and not auth.verify_password(current_password):
+            return JSONResponse({"error": "current password required"}, status_code=403)
+        auth.clear_credentials()
+        sessions.clear_all()
+        activity.log("Removed the control-panel password — the panel is open again")
+        return RedirectResponse("/", status_code=303)
 
     def _readvertise() -> None:
         # Role or name changed — re-publish so discovery reflects the current
@@ -539,7 +641,7 @@ _CSS = """
   .drawer .section p{color:var(--muted);font-size:.88rem;margin:0 0 12px}
   .drawer .section .now{font-family:"Space Mono",monospace;color:var(--pine-deep)}
   .drawer .full{width:100%;justify-content:center;display:flex}
-  .drawer input[name=name]{width:100%;margin-bottom:10px}
+  .drawer .section input{width:100%;margin-bottom:10px}
 
   :focus-visible{outline:3px solid var(--glow);outline-offset:2px;border-radius:6px}
 
@@ -570,6 +672,9 @@ _TIPS = {
               "can show without anyone signing in.",
     "playlist": "The playlist is the list of things that rotate on screen, in order. "
                 "Set how many seconds each item stays up.",
+    "password": "Optional lock. Set a username and password and the panel asks for "
+                "them before anyone can change content or settings. Your screens "
+                "keep playing without it.",
 }
 
 
@@ -579,11 +684,49 @@ def _tip(key: str) -> str:
 
 
 def _settings_drawer(cfg: dict, role: str) -> str:
-    """Slide-out Settings drawer: rename, role switch, full-screen link."""
+    """Slide-out Settings drawer: rename, role switch, password lock, screen link."""
     other = "display" if role == "controller" else "controller"
     other_label = "Display" if other == "display" else "Controller"
     role_label = "Controller" if role == "controller" else "Display"
     other_tip = _TIPS["display"] if other == "display" else _TIPS["controller"]
+
+    if auth.has_credentials():
+        uname = _esc(auth.admin_username() or "admin")
+        pw_section = f"""
+        <div class="section">
+          <h3>Password {_tip('password')}</h3>
+          <p>This panel is <span class="now">locked</span>. Only someone with the
+            password can change content or settings.</p>
+          <details>
+            <summary>Change password</summary>
+            <form method="post" action="/api/password/set" style="margin-top:10px">
+              <input name="username" value="{uname}" placeholder="username" required>
+              <input name="password" type="password" placeholder="new password (min 6)" required>
+              <button class="btn-primary full" type="submit">Save new password</button>
+            </form>
+          </details>
+          <form method="post" action="/api/password/clear" style="margin-top:10px"
+                onsubmit="return confirm('Remove the password? The panel will be open to anyone on your network.');">
+            <button class="btn-danger full" type="submit">Remove password (make open)</button>
+          </form>
+          <form method="post" action="/logout" style="margin-top:10px">
+            <button class="btn-ghost full" type="submit">Log out</button>
+          </form>
+        </div>"""
+    else:
+        pw_section = f"""
+        <div class="section">
+          <h3>Password {_tip('password')}</h3>
+          <p>Optional, but recommended. Lock this panel so only people with the
+            password can change content or settings — your screens keep playing
+            either way.</p>
+          <form method="post" action="/api/password/set">
+            <input name="username" value="admin" placeholder="username" required>
+            <input name="password" type="password" placeholder="password (min 6 characters)" required>
+            <button class="btn-accent full" type="submit">Lock this panel</button>
+          </form>
+        </div>"""
+
     return f"""
       <div class="scrim" onclick="toggleSettings()"></div>
       <aside class="drawer" aria-label="Settings">
@@ -610,6 +753,8 @@ def _settings_drawer(cfg: dict, role: str) -> str:
             <button class="btn-accent full" type="submit">Switch to {other_label}</button>
           </form>
         </div>
+
+        {pw_section}
 
         <div class="section">
           <h3>Full-screen view</h3>
@@ -665,6 +810,58 @@ def _page(title: str, role: str, cfg: dict, body: str) -> HTMLResponse:
 
 def _splash(cfg: dict) -> HTMLResponse:
     return HTMLResponse(_SETUP_HTML.replace("__DEVICE_NAME__", cfg["name"]))
+
+
+def _login_page(cfg: dict, error: str = "") -> HTMLResponse:
+    """The sign-in screen shown when the panel is locked. Includes the offline
+    recovery command so a forgotten password is never a dead end (Law 7)."""
+    err = f'<p class="loginerr">{_esc(error)}</p>' if error else ""
+    html = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in · signage</title>
+{_FONTS_HEAD}
+<style>{_CSS}
+  .loginwrap{{min-height:78vh;display:flex;align-items:center;justify-content:center}}
+  .logincard{{width:100%;max-width:380px;margin:0}}
+  .logincard .fld{{margin-bottom:10px}}
+  .logincard .fld input{{width:100%}}
+  .loginerr{{background:#fdecea;border:1px solid #f1c9c4;color:#b42318;
+             padding:10px 12px;border-radius:10px;font-size:.9rem;margin:0 0 12px}}
+  .full{{width:100%;justify-content:center;display:flex}}
+  .cmd{{background:var(--ink);color:#fff;padding:10px 12px;border-radius:10px;
+        font-family:"Space Mono",monospace;font-size:.72rem;white-space:pre-wrap;
+        word-break:break-all;margin:8px 0 0}}
+</style></head>
+<body>
+  <main class="stage">
+    <div class="loginwrap">
+      <div class="card logincard">
+        <span class="brand"><span class="mark"></span> signage</span>
+        <h1 style="margin:14px 0 4px">Sign in</h1>
+        <p class="lead">Enter the control-panel password for
+          <b>{_esc(cfg['name'])}</b>.</p>
+        {err}
+        <form method="post" action="/login">
+          <label class="fld">Username
+            <input name="username" autocomplete="username" required autofocus>
+          </label>
+          <label class="fld">Password
+            <input name="password" type="password" autocomplete="current-password" required>
+          </label>
+          <button class="btn-primary full" type="submit">Sign in</button>
+        </form>
+        <details style="margin-top:16px">
+          <summary>Forgot the password?</summary>
+          <p class="hint" style="margin-top:8px">On the device itself (keyboard or
+            SSH), run this once to remove the password and reopen the panel:</p>
+          <pre class="cmd">sudo -u signage /opt/signage/.venv/bin/python -m app reset-password</pre>
+        </details>
+      </div>
+    </div>
+  </main>
+</body></html>"""
+    return HTMLResponse(html)
 
 
 def _content_body(cfg: dict) -> str:
