@@ -46,6 +46,7 @@ from . import (
     sessions,
     sync,
 )
+from . import __version__ as APP_VERSION
 
 _SETUP_HTML = (Path(__file__).parent / "pages" / "setup.html").read_text(encoding="utf-8")
 _SCREEN_HTML = (Path(__file__).parent / "pages" / "screen.html").read_text(encoding="utf-8")
@@ -54,6 +55,7 @@ _STATIC_DIR = Path(__file__).parent / "static"  # locally-vendored fonts, etc.
 
 def create_app() -> FastAPI:
     device_id = identity.get_or_create_device_id()
+    _started = time.time()
 
     def current() -> dict:
         cfg = config.load_config()
@@ -218,6 +220,12 @@ def create_app() -> FastAPI:
         if role == "controller":
             return _control_home(cfg)
         return _display_home(cfg)
+
+    @app.get("/health", response_class=HTMLResponse)
+    def health():
+        cfg = current()
+        role = cfg.get("role") or "display"
+        return _page("Health", role, cfg, _health_body(cfg, role, device_id, _started))
 
     @app.post("/api/role")
     def set_role(role: str = Form(...)):
@@ -595,6 +603,15 @@ _CSS = """
            margin:0 0 12px;padding:0 0 14px;border-bottom:1px solid var(--line)}
   .shuffle label{display:flex;align-items:center;gap:8px;font-weight:500;cursor:pointer}
   .shuffle input[type=checkbox]{width:18px;height:18px;accent-color:var(--pine)}
+  /* health screen rows */
+  .hrow{display:flex;gap:12px;padding:9px 0;border-top:1px solid var(--line)}
+  .hrow:first-of-type{border-top:0}
+  .hk{flex:none;width:150px;color:var(--muted);font-size:.9rem}
+  .hv{flex:1;min-width:0;word-break:break-word}
+  .mono{font-family:"Space Mono",monospace;font-size:.85em}
+  .muted{color:var(--muted)}
+  .ok-dot{display:inline-block;width:9px;height:9px;border-radius:50%;
+          background:#1a8f4c;margin-right:5px}
 
   /* pairing code */
   .code{
@@ -774,6 +791,12 @@ def _settings_drawer(cfg: dict, role: str) -> str:
         {pw_section}
 
         <div class="section">
+          <h3>Health &amp; activity</h3>
+          <p>See device status and a log of recent changes.</p>
+          <a class="btn-ghost full" href="/health" style="text-decoration:none">Open health screen</a>
+        </div>
+
+        <div class="section">
           <h3>Full-screen view</h3>
           <p>Open the page a screen shows when running as a display.</p>
           <a class="btn-ghost full" href="/screen" style="text-decoration:none">Open full-screen view</a>
@@ -879,6 +902,73 @@ def _login_page(cfg: dict, error: str = "") -> HTMLResponse:
   </main>
 </body></html>"""
     return HTMLResponse(html)
+
+
+def _fmt_uptime(seconds: float) -> str:
+    s = int(seconds)
+    d, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m, s = divmod(s, 60)
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h:
+        parts.append(f"{h}h")
+    if m:
+        parts.append(f"{m}m")
+    parts.append(f"{s}s")
+    return " ".join(parts)
+
+
+def _health_body(cfg: dict, role: str, device_id: str, started: float) -> str:
+    """Plain-language status + the recent activity log (Law 8)."""
+    url = f"http://{discovery.primary_ip()}:{config.PORT}"
+    rows = []
+
+    def row(key, value):
+        rows.append(f'<div class="hrow"><span class="hk">{_esc(key)}</span>'
+                    f'<span class="hv">{value}</span></div>')
+
+    row("Status", '<span class="ok-dot"></span> Running')
+    row("Name", _esc(cfg.get("name") or "—"))
+    row("Role", _esc((role or "unset").capitalize()))
+    row("Device ID", f'<span class="mono">{_esc(device_id[:12])}…</span>')
+    row("Address", f'<a href="{_esc(url)}">{_esc(url)}</a>')
+    row("App version", _esc(APP_VERSION))
+    row("Uptime", _esc(_fmt_uptime(time.time() - started)))
+
+    if role == "controller":
+        row("Paired displays", str(len(pairing.list_displays())))
+        row("Playlist items", str(len(library.list_items())))
+        row("PowerPoint support", _esc(promote.conversion_state()["state"]))
+    else:
+        pushed = sync.screen_items()
+        if pushed is not None:
+            row("Now showing", f"{len(pushed)} item(s) sent from a controller")
+        else:
+            n = len(library.list_items())
+            row("Now showing", f"{n} local item(s)" if n else "nothing yet")
+        ctrl = pairing.get_controller() if pairing.is_claimed() else None
+        row("Paired to", _esc(ctrl.get("name") or "a controller") if ctrl else "not paired")
+
+    status_card = '<div class="card"><h2>This device</h2>' + "".join(rows) + "</div>"
+
+    events = activity.recent(40)
+    if events:
+        log_rows = "".join(
+            '<div class="hrow"><span class="hk mono">' + _esc(e.get("when", "")) + "</span>"
+            '<span class="hv">' + _esc(e.get("event", ""))
+            + (f' <span class="muted">— {_esc(e.get("detail"))}</span>' if e.get("detail") else "")
+            + "</span></div>"
+            for e in events
+        )
+    else:
+        log_rows = '<p class="empty">No activity yet.</p>'
+    log_card = '<div class="card"><h2>Recent activity</h2>' + log_rows + "</div>"
+
+    intro = ('<p class="eyebrow">Status &amp; activity</p><h1>Health</h1>'
+             '<p class="lead">A quick look at what this device is doing.</p>')
+    return intro + status_card + log_card
 
 
 def _content_body(cfg: dict) -> str:
