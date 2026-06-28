@@ -901,7 +901,7 @@ def _splash(cfg: dict) -> HTMLResponse:
 
 def _login_page(cfg: dict, error: str = "") -> HTMLResponse:
     """The sign-in screen shown when the panel is locked. Includes the offline
-    recovery command so a forgotten password is never a dead end (Law 7)."""
+    recovery command so a forgotten password is never a dead end."""
     err = f'<p class="loginerr">{_esc(error)}</p>' if error else ""
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -968,7 +968,7 @@ def _fmt_uptime(seconds: float) -> str:
 
 
 def _health_body(cfg: dict, role: str, device_id: str, started: float) -> str:
-    """Plain-language status + the recent activity log (Law 8)."""
+    """Plain-language status + the recent activity log for this device."""
     url = f"http://{discovery.primary_ip()}:{config.PORT}"
     rows = []
 

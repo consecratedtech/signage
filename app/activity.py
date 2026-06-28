@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Consecrated Tech
-"""A small, human-readable activity log (Law 8: always clear what's happening).
+"""A small, human-readable activity log so it's always clear what the device did.
 
 Plain-language events — "Pushed content to 2 displays", "Renamed to Lobby" — are
 appended to a capped JSON file in the data dir so an operator can see what the
