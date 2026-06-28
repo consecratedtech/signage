@@ -281,12 +281,16 @@ def create_app() -> FastAPI:
                     items.append({"type": "video", "src": src, "seconds": item["seconds"]})
                 else:
                     items.append({"type": "image", "src": f"/asset/{item['ref']}", "seconds": item["seconds"]})
+        ips = discovery.lan_ips()
+        primary = ips[0] if ips else "127.0.0.1"
         return {
             "items": items,
             "pairing_code": pairing.current_code(),
             "shuffle": bool(current().get("shuffle")),
-            # so a display with nothing on it can show where to connect
-            "connect_url": f"http://{discovery.primary_ip()}:{config.PORT}",
+            # where to reach this device: the primary address, plus every interface
+            # so a wired + Wi-Fi box always shows an address you can actually use.
+            "connect_url": f"http://{primary}:{config.PORT}",
+            "ips": ips,
         }
 
     @app.get("/recv-asset/{name}")

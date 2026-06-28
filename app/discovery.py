@@ -8,6 +8,7 @@ fallback for networks where mDNS is blocked.
 """
 
 import socket
+import subprocess
 import time
 
 from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf
@@ -15,16 +16,49 @@ from zeroconf import ServiceBrowser, ServiceInfo, Zeroconf
 SERVICE_TYPE = "_signage._tcp.local."
 
 
-def primary_ip() -> str:
-    """Best-guess LAN address of this device."""
+def _all_ipv4() -> list:
+    """Every non-loopback, non-link-local IPv4 the OS has assigned. Works with no
+    internet — essential for an offline appliance, where the route-to-8.8.8.8
+    probe below can't pick a source address and would otherwise yield localhost."""
+    found = []
+    try:
+        res = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=2)
+        for tok in res.stdout.split():
+            parts = tok.split(".")
+            if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+                continue  # not a dotted-quad IPv4 (skips IPv6 and any stray tokens)
+            if tok.startswith(("127.", "169.254.")):
+                continue  # loopback / link-local
+            if tok not in found:
+                found.append(tok)
+    except Exception:
+        pass
+    return found
+
+
+def lan_ips() -> list:
+    """Addresses this device can be reached on, best-guess first. Offline-safe."""
+    ips = []
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.connect(("8.8.8.8", 80))
-        return sock.getsockname()[0]
+        sock.connect(("8.8.8.8", 80))   # sends nothing; just selects a source IP
+        ip = sock.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            ips.append(ip)
     except OSError:
-        return "127.0.0.1"
+        pass
     finally:
         sock.close()
+    for ip in _all_ipv4():
+        if ip not in ips:
+            ips.append(ip)
+    return ips
+
+
+def primary_ip() -> str:
+    """Best single LAN address; localhost only if the device truly has no IP."""
+    ips = lan_ips()
+    return ips[0] if ips else "127.0.0.1"
 
 
 def advertise(device_id: str, name: str, role: str, port: int) -> Zeroconf:
