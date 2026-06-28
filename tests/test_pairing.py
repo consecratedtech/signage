@@ -126,3 +126,15 @@ def test_cancel_pairing_clears_code(monkeypatch):
     pairing.start_pairing()
     pairing.cancel_pairing()
     assert pairing.current_code() is None
+
+
+# --- controller trust record (display side: set / get / forget) -------------
+
+def test_set_get_forget_controller(clean_data_dir):
+    assert pairing.is_claimed() is False
+    pairing.set_controller({"device_id": "C1", "name": "Lobby", "address": "1.2.3.4", "site_key": "k"})
+    assert pairing.is_claimed() is True
+    assert (pairing.get_controller() or {}).get("name") == "Lobby"
+    pairing.forget_controller()
+    assert pairing.is_claimed() is False
+    assert pairing.get_controller() is None

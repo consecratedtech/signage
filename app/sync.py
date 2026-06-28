@@ -10,6 +10,7 @@ so it keeps playing even if the controller later goes offline.
 
 import hashlib
 import json
+import shutil
 import urllib.request
 from pathlib import Path
 
@@ -176,6 +177,17 @@ def receive(manifest: dict, signature: str, controller_site_key: str) -> bool:
             items.append({"type": "image", "src": f"/recv-asset/{name}", "seconds": it["seconds"]})
     _save({"items": items})
     return True
+
+
+def clear_received() -> None:
+    """Forget the pushed playlist + its cached images, so the screen falls back to
+    its own local content (or the idle screen). Lets an operator take pushed
+    content down from the display itself when the controller is offline."""
+    try:
+        RECEIVED_PATH.unlink()
+    except OSError:
+        pass
+    shutil.rmtree(RECV_ASSETS, ignore_errors=True)
 
 
 def screen_items():

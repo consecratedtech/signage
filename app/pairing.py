@@ -91,6 +91,10 @@ def is_claimed() -> bool:
     return Vault().has("controller")
 
 
+def forget_controller() -> None:                 # display side: detach from its controller
+    Vault().delete("controller")
+
+
 def list_displays() -> list:                     # controller side: its displays
     return Vault().get("displays", [])
 

@@ -434,6 +434,21 @@ def create_app() -> FastAPI:
         pairing.cancel_pairing()
         return RedirectResponse("/", status_code=303)
 
+    @app.post("/api/received/clear")
+    def received_clear():
+        # Take down content a controller pushed — usable from the display itself
+        # even when the controller is offline. Falls back to local content / idle.
+        sync.clear_received()
+        activity.log("Removed content pushed from the controller")
+        return RedirectResponse("/", status_code=303)
+
+    @app.post("/api/pair/forget")
+    def pair_forget():
+        pairing.forget_controller()
+        sync.clear_received()
+        activity.log("Unpaired from the controller and cleared its pushed content")
+        return RedirectResponse("/", status_code=303)
+
     @app.post("/api/pair/claim")
     async def pair_claim(request: Request):
         body = await request.json()
@@ -1231,9 +1246,15 @@ def _display_home(cfg: dict) -> HTMLResponse:
             <p class="hint">Controlled by
               <b>{_esc(controller.get('name') or 'a controller')}</b>.
               Content sent from there will appear on this screen.</p>
-            <form method="post" action="/api/pair/start">
-              <button class="btn-ghost" type="submit">Re-pair to another controller</button>
-            </form>
+            <div class="row">
+              <form method="post" action="/api/pair/start">
+                <button class="btn-ghost" type="submit">Re-pair to another controller</button>
+              </form>
+              <form method="post" action="/api/pair/forget"
+                    onsubmit="return confirm('Unpair this screen and remove the pushed content? You can pair again later.');">
+                <button class="btn-danger" type="submit">Unpair this screen</button>
+              </form>
+            </div>
           </div>"""
     else:
         section = f"""
@@ -1245,12 +1266,30 @@ def _display_home(cfg: dict) -> HTMLResponse:
             </form>
           </div>"""
 
+    # When a controller has pushed a playlist, let the operator take it down from
+    # the display itself — important if the controller is offline and can't.
+    pushed = sync.screen_items()
+    pushed_card = ""
+    if pushed is not None:
+        from_name = _esc((pairing.get_controller() or {}).get("name") or "a controller")
+        pushed_card = f"""
+          <div class="card note">
+            <h2>Showing pushed content</h2>
+            <p class="hint">This screen is playing <b>{len(pushed)}</b> item(s) sent from
+              {from_name}, which overrides anything added on this screen. If the controller
+              is offline and you need to take it down, remove it here.</p>
+            <form method="post" action="/api/received/clear"
+                  onsubmit="return confirm('Remove the content pushed to this screen? It will fall back to this screen’s own content or the idle screen.');">
+              <button class="btn-danger" type="submit">Remove pushed content</button>
+            </form>
+          </div>"""
+
     intro = f"""
       <p class="eyebrow">This device shows content {_tip('display')}</p>
       <h1>Display</h1>
       <p class="lead">Pair it to a controller, or add content directly below.</p>
     """
-    return _page("Display", "display", cfg, intro + section + _content_body(cfg))
+    return _page("Display", "display", cfg, intro + pushed_card + section + _content_body(cfg))
 
 
 def _promote_banner(conv: dict) -> str:

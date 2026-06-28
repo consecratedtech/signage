@@ -168,3 +168,15 @@ def test_items_for_display_targeting():
 def test_items_for_display_empty_targets_means_all():
     items = [{"id": "1", "type": "url", "ref": "x", "seconds": 5, "targets": []}]
     assert [i["id"] for i in sync.items_for_display(items, "anyone")] == ["1"]
+
+
+# --- clear_received (take pushed content down from the display) --------------
+
+def test_clear_received_removes_playlist_and_assets(clean_data_dir):
+    sync._save({"items": [{"type": "url", "src": "https://x", "seconds": 5}]})
+    sync.RECV_ASSETS.mkdir(parents=True, exist_ok=True)
+    (sync.RECV_ASSETS / "a.img").write_bytes(b"x")
+    assert sync.screen_items() is not None
+    sync.clear_received()
+    assert sync.screen_items() is None
+    assert not (sync.RECV_ASSETS / "a.img").exists()
