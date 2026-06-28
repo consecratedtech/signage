@@ -46,6 +46,12 @@ def build_manifest(items: list, from_name: str, base_url: str) -> dict:
                 "type": "slideshow", "seconds": it["seconds"],
                 "asset_urls": [f"{base_url}/asset/{r}" for r in it.get("refs", [])],
             })
+        elif it["type"] == "video":
+            if it["ref"].startswith("http"):  # a direct video link plays as-is
+                out.append({"type": "video", "seconds": it["seconds"], "url": it["ref"]})
+            else:
+                out.append({"type": "video", "seconds": it["seconds"],
+                            "asset_url": f"{base_url}/asset/{it['ref']}"})
         else:
             out.append({
                 "type": "image", "seconds": it["seconds"],
@@ -99,6 +105,17 @@ def receive(manifest: dict, signature: str, controller_site_key: str) -> bool:
                 srcs.append(f"/recv-asset/{name}")
             if srcs:
                 items.append({"type": "slideshow", "srcs": srcs, "seconds": it["seconds"]})
+        elif it.get("type") == "video":
+            if it.get("url"):
+                items.append({"type": "video", "src": it["url"], "seconds": it["seconds"]})
+            elif it.get("asset_url"):
+                ext = Path(it["asset_url"].split("?")[0]).suffix or ".mp4"
+                name = hashlib.sha256(it["asset_url"].encode()).hexdigest()[:16] + ext
+                try:
+                    urllib.request.urlretrieve(it["asset_url"], str(RECV_ASSETS / name))
+                except Exception:
+                    continue  # skip a video we couldn't fetch; keep the rest
+                items.append({"type": "video", "src": f"/recv-asset/{name}", "seconds": it["seconds"]})
         else:
             name = hashlib.sha256(it["asset_url"].encode()).hexdigest()[:16] + ".img"
             try:

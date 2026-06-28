@@ -289,3 +289,44 @@ def test_add_url_is_pure_no_slides_metadata_until_measured():
 
 def test_measure_slides_unknown_id_is_noop():
     assert library.measure_slides("ffffffff") == {}
+
+
+# --- video + YouTube --------------------------------------------------------
+
+def test_add_url_youtube_becomes_muted_autoplay_embed():
+    item = library.add_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+    assert item["type"] == "url"
+    assert "youtube.com/embed/dQw4w9WgXcQ" in item["ref"]
+    assert "autoplay=1" in item["ref"] and "mute=1" in item["ref"]
+    assert item["name"] == "YouTube video"
+
+
+def test_add_url_youtube_short_link():
+    item = library.add_url("https://youtu.be/abc123XYZ")
+    assert "youtube.com/embed/abc123XYZ" in item["ref"]
+
+
+def test_add_url_direct_video_becomes_video_item():
+    item = library.add_url("https://example.com/clip.mp4")
+    assert item["type"] == "video"
+    assert item["ref"] == "https://example.com/clip.mp4"
+
+
+def test_add_video_stores_asset_and_plays_full_by_default():
+    item = library.add_video("promo.MP4", b"\x00\x00\x00\x18ftypmp42")
+    assert item["type"] == "video"
+    assert item["ref"].endswith(".mp4")
+    assert item["seconds"] == 0  # 0 == play the whole video
+    assert library.asset_path(item["ref"]).read_bytes().startswith(b"\x00\x00\x00\x18")
+
+
+def test_set_seconds_video_allows_zero():
+    item = library.add_video("v.mp4", b"x")
+    library.set_seconds(item["id"], 0)
+    assert library.list_items()[0]["seconds"] == 0
+
+
+def test_set_seconds_nonvideo_still_has_floor():
+    a = library.add_url("a.com", seconds=10)
+    library.set_seconds(a["id"], 0)
+    assert library.list_items()[0]["seconds"] == library.MIN_SECONDS

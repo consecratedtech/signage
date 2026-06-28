@@ -55,6 +55,32 @@ def _is_google_slides(url: str) -> bool:
     return "docs.google.com/presentation" in url
 
 
+VIDEO_EXTS = (".mp4", ".webm", ".m4v", ".mov", ".ogg", ".ogv")
+
+
+def _is_youtube(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
+def _youtube_id(url: str) -> str:
+    m = re.search(r"(?:v=|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{6,})", url)
+    return m.group(1) if m else ""
+
+
+def _youtube_embed(url: str) -> str:
+    """A frameable, auto-playing, muted, looping YouTube embed. Muted is required
+    for browsers to allow autoplay on a screen with no user interaction."""
+    vid = _youtube_id(url)
+    if not vid:
+        return url
+    return (f"https://www.youtube.com/embed/{vid}?autoplay=1&mute=1&controls=0"
+            f"&loop=1&playlist={vid}&rel=0&modestbranding=1&playsinline=1")
+
+
+def _is_video_url(url: str) -> bool:
+    return url.split("?")[0].lower().endswith(VIDEO_EXTS)
+
+
 def _slides_autoplay(url: str) -> str:
     """Normalize a 'Publish to web' Slides link for embedding: use the /embed form
     (the /pub full-page view sends X-Frame-Options: SAMEORIGIN and won't render in
@@ -116,11 +142,33 @@ def add_url(url: str, seconds: int = DEFAULT_URL_SECONDS, name: str = "") -> dic
     url = url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
+    if _is_youtube(url):
+        return _append({
+            "id": secrets.token_hex(4), "type": "url", "ref": _youtube_embed(url),
+            "seconds": int(seconds), "name": name.strip() or "YouTube video",
+        })
+    if _is_video_url(url):  # a direct link to a video file
+        return _append({
+            "id": secrets.token_hex(4), "type": "video", "ref": url,
+            "seconds": int(seconds), "name": name.strip() or url,
+        })
     url = _slides_autoplay(url)
     label = name.strip() or ("Google Slides" if _is_google_slides(url) else url)
     return _append({
         "id": secrets.token_hex(4), "type": "url", "ref": url,
         "seconds": int(seconds), "name": label,
+    })
+
+
+def add_video(filename: str, data: bytes, seconds: int = 0) -> dict:
+    """Store an uploaded video file as one item. seconds=0 means play the whole
+    video (the screen advances when it ends); a positive value caps it."""
+    ASSETS.mkdir(parents=True, exist_ok=True)
+    asset_id = secrets.token_hex(8) + (Path(filename).suffix.lower() or ".mp4")
+    (ASSETS / asset_id).write_bytes(data)
+    return _append({
+        "id": secrets.token_hex(4), "type": "video", "ref": asset_id,
+        "seconds": int(seconds), "name": filename,
     })
 
 
@@ -209,11 +257,13 @@ def move(item_id: str, direction: str) -> None:
 
 
 def set_seconds(item_id: str, seconds: int) -> None:
-    """Change how long one item stays on screen, in place (no re-add needed)."""
+    """Change how long one item stays on screen, in place (no re-add needed).
+    Videos allow 0 ('play the whole video'); everything else has a small floor."""
     items = _load()
     for it in items:
         if it["id"] == item_id:
-            it["seconds"] = max(MIN_SECONDS, int(seconds))
+            floor = 0 if it.get("type") == "video" else MIN_SECONDS
+            it["seconds"] = max(floor, int(seconds))
             break
     _save(items)
 

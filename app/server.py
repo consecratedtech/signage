@@ -272,6 +272,9 @@ def create_app() -> FastAPI:
                 elif item["type"] == "slideshow":
                     items.append({"type": "slideshow", "seconds": item["seconds"],
                                   "srcs": [f"/asset/{r}" for r in item.get("refs", [])]})
+                elif item["type"] == "video":
+                    src = item["ref"] if item["ref"].startswith("http") else f"/asset/{item['ref']}"
+                    items.append({"type": "video", "src": src, "seconds": item["seconds"]})
                 else:
                     items.append({"type": "image", "src": f"/asset/{item['ref']}", "seconds": item["seconds"]})
         return {
@@ -327,9 +330,13 @@ def create_app() -> FastAPI:
         data = await file.read()
         name = file.filename or "upload"
         try:
-            if name.lower().endswith((".pptx", ".ppt")):
+            low = name.lower()
+            if low.endswith((".pptx", ".ppt")):
                 item = library.add_pptx(name, data, seconds)
                 activity.log(f"Added a PowerPoint ({item.get('slides', 0)} slide(s))", name)
+            elif low.endswith(library.VIDEO_EXTS):
+                library.add_video(name, data, 0)  # 0 = play the whole video
+                activity.log("Added a video to the playlist", name)
             else:
                 library.add_image(name, data, seconds)
                 activity.log("Added an image to the playlist", name)
@@ -993,6 +1000,7 @@ def _content_body(cfg: dict) -> str:
             dn_dis = " disabled" if n == last else ""
             is_gslides = it["type"] == "url" and it.get("slides")
             is_show = it["type"] == "slideshow"
+            is_video = it["type"] == "video"
             secs_form = f"""
                 <form class="secs" method="post" action="/api/content/seconds">
                   <input type="hidden" name="item_id" value="{it['id']}">
@@ -1007,6 +1015,15 @@ def _content_body(cfg: dict) -> str:
             elif is_show:
                 note = f'<span class="slidenote">&#9654; {it["slides"]}-slide show &middot; {it["seconds"]}s each</span>'
                 secs_html = secs_form.replace("{title}", "Seconds per slide")
+            elif is_video:
+                note = '<span class="slidenote">&#9654; video' + ('' if it["seconds"] else ' (plays in full)') + '</span>'
+                secs_html = f"""
+                <form class="secs" method="post" action="/api/content/seconds">
+                  <input type="hidden" name="item_id" value="{it['id']}">
+                  <input name="seconds" type="number" min="0" value="{it['seconds']}"
+                         title="Seconds (0 = play the whole video)" aria-label="Seconds (0 = play the whole video)">
+                  <button class="btn-ghost set" title="Save time">Set</button>
+                </form>"""
             else:
                 note = ""
                 secs_html = secs_form.replace("{title}", "Seconds on screen")
@@ -1047,11 +1064,11 @@ def _content_body(cfg: dict) -> str:
 
     return f"""
       <div class="card">
-        <h2>Add a web page or Google Slides {_tip('slides')}</h2>
-        <p class="hint">Paste any web address, or a Google Slides
-          &ldquo;Publish to web&rdquo; link.</p>
+        <h2>Add a web page, Google Slides, or video {_tip('slides')}</h2>
+        <p class="hint">Paste a web address, a Google Slides &ldquo;Publish to web&rdquo;
+          link, a YouTube link, or a direct video link.</p>
         <form method="post" action="/api/content/url" class="row">
-          <input name="url" placeholder="https://… or a Google Slides 'Publish to web' link" required>
+          <input name="url" placeholder="https://…  ·  Google Slides link  ·  YouTube link" required>
           <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="15" title="seconds on screen">
           <button class="btn-primary" type="submit">Add</button>
         </form>
@@ -1062,11 +1079,12 @@ def _content_body(cfg: dict) -> str:
       </div>
 
       <div class="card">
-        <h2>Upload an image or PowerPoint</h2>
+        <h2>Upload an image, PowerPoint, or video</h2>
         <p class="hint">A PowerPoint becomes <b>one</b> slideshow that plays all its
-          slides in order. The seconds box is how long each image or slide stays up.</p>
+          slides in order; a video plays in full. The seconds box is how long each
+          image or slide stays up.</p>
         <form method="post" action="/api/content/upload" enctype="multipart/form-data" class="row">
-          <input name="file" type="file" accept="image/*,.pptx,.ppt" required>
+          <input name="file" type="file" accept="image/*,video/*,.pptx,.ppt" required>
           <input name="seconds" type="number" min="{library.MIN_SECONDS}" value="10" title="seconds per image or slide">
           <button class="btn-primary" type="submit">Upload</button>
         </form>
