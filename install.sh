@@ -157,6 +157,34 @@ install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$DATA_DIR"
 install -d -m 0700 -o "$APP_USER" -g "$APP_USER" "$WORK_DIR"
 ok "data dir ${DATA_DIR} (0700 — secrets stay here, never world-readable)"
 
+# ---- hide the mouse cursor --------------------------------------------------
+# A signage screen has no operator, so the pointer must never show. cage ignores
+# XCURSOR_THEME and loads the system "default" xcursor theme regardless, so we
+# build a "blank" theme whose cursors are 1x1 fully-transparent images, alias
+# every common cursor name to it, then repoint /usr/share/icons/default at it.
+# (Pairing this with software cursors in the kiosk unit makes the blank theme
+# actually take effect — see the WLR_NO_HARDWARE_CURSORS note below.)
+step "Hiding the mouse cursor (blank xcursor theme)"
+install -d -m 0755 /usr/share/icons/blank/cursors
+python3 - <<'PY'
+import struct
+sizes=[16,24,32,48,64]; px=struct.pack('<I',0)
+chunks=[struct.pack('<IIIIIIIII',36,0xfffd0002,s,1,1,1,0,0,0)+px for s in sizes]
+hdr=b'Xcur'+struct.pack('<III',16,0x00010000,len(chunks))
+pos=16+len(chunks)*12; offs=[]
+for c in chunks: offs.append(pos); pos+=len(c)
+toc=b''.join(struct.pack('<III',0xfffd0002,s,o) for s,o in zip(sizes,offs))
+open('/usr/share/icons/blank/cursors/left_ptr','wb').write(hdr+toc+b''.join(chunks))
+PY
+( cd /usr/share/icons/blank/cursors
+  for n in default pointer arrow top_left_arrow left_ptr_watch xterm text ibeam hand hand1 hand2 pointing_hand grab grabbing openhand closedhand watch wait progress crosshair cross fleur move all-scroll col-resize row-resize size_all size_ver size_hor n-resize e-resize s-resize w-resize ne-resize nw-resize se-resize sw-resize not-allowed no-drop forbidden help question_arrow context-menu copy alias; do
+    ln -sf left_ptr "$n"
+  done )
+printf '[Icon Theme]\nName=blank\nComment=Invisible cursor for kiosk\n' > /usr/share/icons/blank/index.theme
+install -d -m 0755 /usr/share/icons/default
+ln -sfn /usr/share/icons/blank/cursors /usr/share/icons/default/cursors
+ok "blank cursor theme installed and set as the system default"
+
 # ---- app code ---------------------------------------------------------------
 step "Placing app code"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -249,6 +277,13 @@ UtmpMode=user
 # cage (wlroots) needs XDG_RUNTIME_DIR; enable-linger (above) creates /run/user/<uid>.
 Environment=XDG_RUNTIME_DIR=/run/user/%U
 Environment=XDG_SESSION_TYPE=wayland
+# Hide the pointer: software cursors + the blank "default" theme (installed above)
+# make it invisible. cage otherwise draws a GPU hardware cursor that ignores the
+# theme, so WLR_NO_HARDWARE_CURSORS forces wlroots to render the (blank) cursor.
+Environment=WLR_NO_HARDWARE_CURSORS=1
+Environment=XCURSOR_THEME=blank
+Environment=XCURSOR_PATH=/usr/share/icons
+Environment=XCURSOR_SIZE=24
 # Wait until the web app actually answers before launching the browser. systemd
 # treats ${APP}.service as "started" the moment the process spawns, but uvicorn
 # needs several seconds to import deps and bind the port; without this gate
