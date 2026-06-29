@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Consecrated Tech
+"""Privileged network helper — runs nmcli for the sandboxed app.
+
+The app can't touch the network by design (its service is locked down), so it
+drops a small JSON request in the data dir and a root path unit runs this. We read
+the request, do the one action it asks for, and write the result back to a file the
+app can read. The app never runs nmcli itself.
+
+Only a fixed list of actions is honored, and every value that comes from the
+request (an SSID, a password) is handed to nmcli as a separate argument — never
+pasted into a shell line — so a request can't smuggle in extra commands.
+
+Actions so far: "scan" (list nearby networks) and "status" (what the radio is
+doing). Hosting the setup network and joining a chosen one come next."""
+
+import json
+import os
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+DATA = Path(os.environ.get("DATA_DIR", "/var/lib/signage"))
+APP_USER = os.environ.get("APP_USER", "signage")
+REQUEST = DATA / "wifi.request"
+SCAN = DATA / "wifi-scan.json"
+STATUS = DATA / "wifi-status.json"
+
+NMCLI = shutil.which("nmcli") or "/usr/bin/nmcli"
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _give_to_app(path: Path) -> None:
+    """Hand a result file to the app user, readable only by it."""
+    try:
+        import pwd  # Unix-only; imported here so the pure parser stays importable anywhere
+        info = pwd.getpwnam(APP_USER)
+        os.chown(path, info.pw_uid, info.pw_gid)
+        os.chmod(path, 0o600)
+    except (KeyError, OSError, ModuleNotFoundError):
+        pass
+
+
+def _write(path: Path, obj: dict) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj))
+    tmp.replace(path)
+    _give_to_app(path)
+
+
+def _nmcli(*args, timeout: int = 30) -> subprocess.CompletedProcess:
+    return subprocess.run([NMCLI, *args], capture_output=True, text=True, timeout=timeout)
+
+
+def _split_terse(line: str) -> list:
+    """Split one line of `nmcli -t` output. Terse mode separates fields with ':'
+    and escapes any ':' or '\\' inside a value as '\\:' / '\\\\', so a naive split
+    would mangle SSIDs that contain a colon."""
+    out, cur, i = [], "", 0
+    while i < len(line):
+        c = line[i]
+        if c == "\\" and i + 1 < len(line):
+            cur += line[i + 1]
+            i += 2
+            continue
+        if c == ":":
+            out.append(cur)
+            cur = ""
+            i += 1
+            continue
+        cur += c
+        i += 1
+    out.append(cur)
+    return out
+
+
+def do_scan() -> None:
+    """List nearby networks, strongest signal first, one entry per SSID."""
+    _nmcli("device", "wifi", "rescan", timeout=20)
+    res = _nmcli("-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list", timeout=20)
+    nets, seen = [], set()
+    for line in res.stdout.splitlines():
+        parts = _split_terse(line)
+        if len(parts) < 3:
+            continue
+        ssid = parts[0]
+        if not ssid or ssid in seen:
+            continue  # hidden networks have a blank SSID; collapse duplicates
+        seen.add(ssid)
+        try:
+            signal = int(parts[1])
+        except ValueError:
+            signal = 0
+        nets.append({"ssid": ssid, "signal": signal, "secure": parts[2] != ""})
+    nets.sort(key=lambda n: n["signal"], reverse=True)
+    _write(SCAN, {"networks": nets, "when": _now()})
+
+
+def do_status() -> None:
+    """What the Wi-Fi radio is doing right now: connected/disconnected, to which
+    network, and whether we're currently hosting the setup network."""
+    st = {"wifi": None, "ssid": None, "ap_active": False, "when": _now()}
+    res = _nmcli("-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "device", "status")
+    for line in res.stdout.splitlines():
+        p = _split_terse(line)
+        if len(p) >= 4 and p[1] == "wifi":
+            st["wifi"] = p[2]
+            if p[3] == "Hotspot":
+                st["ap_active"] = True
+            elif p[2] == "connected":
+                st["ssid"] = p[3]
+    _write(STATUS, st)
+
+
+ACTIONS = {"scan": do_scan, "status": do_status}
+
+
+def main() -> None:
+    try:
+        req = json.loads(REQUEST.read_text())
+    except (json.JSONDecodeError, OSError):
+        req = {}
+    finally:
+        try:
+            REQUEST.unlink()
+        except OSError:
+            pass
+    fn = ACTIONS.get(req.get("action"))
+    if not fn:
+        return
+    try:
+        fn()
+    except Exception as exc:  # never leave the request stuck; report and move on
+        _write(STATUS, {"error": str(exc), "action": req.get("action"), "when": _now()})
+
+
+if __name__ == "__main__":
+    main()

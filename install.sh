@@ -441,14 +441,49 @@ WantedBy=multi-user.target
 EOF
 ok "self-update helper installed (atomic release swap, auto-rollback on failure)"
 
+# ---- WiFi setup helper (privileged nmcli bridge) ----------------------------
+# The app is sandboxed and can't touch the network, so WiFi setup (scan nearby
+# networks, host the setup network, join a chosen one) is done by this root helper.
+# The app drops a JSON request in the data dir; this path unit runs the helper,
+# which performs the one action and writes the result back for the app to read.
+step "Installing the WiFi setup helper"
+install -m 0755 "${SRC_DIR}/helpers/signage-wifi" "/usr/local/sbin/${APP}-wifi"
+
+cat > "/etc/systemd/system/${APP}-wifi.service" <<EOF
+[Unit]
+Description=${APP} WiFi setup helper (runs nmcli for the sandboxed app)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+Environment=DATA_DIR=${DATA_DIR}
+Environment=APP_USER=${APP_USER}
+ExecStart=/usr/local/sbin/${APP}-wifi
+EOF
+
+cat > "/etc/systemd/system/${APP}-wifi.path" <<EOF
+[Unit]
+Description=${APP} WiFi request watcher
+
+[Path]
+PathExists=${DATA_DIR}/wifi.request
+Unit=${APP}-wifi.service
+
+[Install]
+WantedBy=multi-user.target
+EOF
+ok "WiFi setup helper installed (scan / status; hosting + join come next)"
+
 systemctl daemon-reload
-systemctl enable "${APP}.service" "${APP}-kiosk.service" "${APP}-promote.path" "${APP}-update.path" >/dev/null 2>&1 || true
+systemctl enable "${APP}.service" "${APP}-kiosk.service" "${APP}-promote.path" "${APP}-update.path" "${APP}-wifi.path" >/dev/null 2>&1 || true
 # Use restart (not just enable --now) so re-running the installer to UPDATE
 # actually loads the new code — enable --now is a no-op on an already-running unit.
 systemctl restart "${APP}.service"       >/dev/null 2>&1 || warn "could not start ${APP}.service yet (app code may be incomplete)"
 systemctl restart "${APP}-kiosk.service" >/dev/null 2>&1 || warn "could not start kiosk yet"
 systemctl restart "${APP}-promote.path"  >/dev/null 2>&1 || true
 systemctl restart "${APP}-update.path"   >/dev/null 2>&1 || true
+systemctl restart "${APP}-wifi.path"     >/dev/null 2>&1 || true
 
 # ---- done -------------------------------------------------------------------
 step "Done"
